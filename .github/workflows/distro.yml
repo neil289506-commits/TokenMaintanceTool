@@ -1,0 +1,42 @@
+# Informational: does the source build and pass its tests with each distro's own Qt 6 + OpenSSL?
+# Not called by release.yml, so a failure here never blocks a release.
+name: distro
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ["src/**", "tests/**", "CMakeLists.txt", ".github/workflows/distro.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ matrix.image }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "ubuntu:24.04",         runner: ubuntu-24.04,     arch: x86_64,  pkgs: apt,    qtmin: "6.4" }
+          - { image: "ubuntu:24.04",         runner: ubuntu-24.04-arm, arch: aarch64, pkgs: apt,    qtmin: "6.4" }
+          - { image: "debian:12",            runner: ubuntu-24.04,     arch: x86_64,  pkgs: apt,    qtmin: "6.4" }
+          - { image: "fedora:latest",        runner: ubuntu-24.04,     arch: x86_64,  pkgs: dnf,    qtmin: "6.5" }
+          - { image: "archlinux:latest",     runner: ubuntu-24.04,     arch: x86_64,  pkgs: pacman, qtmin: "6.5" }
+          - { image: "opensuse/tumbleweed",  runner: ubuntu-24.04,     arch: x86_64,  pkgs: zypper, qtmin: "6.5" }
+    steps:
+      - name: Install toolchain
+        run: |
+          case "${{ matrix.pkgs }}" in
+            apt)    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git cmake ninja-build g++ qt6-base-dev libssl-dev libgl1-mesa-dev ;;
+            dnf)    dnf install -y git cmake ninja-build gcc-c++ qt6-qtbase-devel openssl-devel mesa-libGL-devel ;;
+            pacman) pacman -Syu --noconfirm git cmake ninja gcc qt6-base openssl ;;
+            zypper) zypper --non-interactive install git cmake ninja gcc-c++ qt6-base-devel libopenssl-devel Mesa-libGL-devel ;;
+          esac
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DTV_QT_MIN=${{ matrix.qtmin }} -DCMAKE_CXX_FLAGS="-Wall -Wextra"
+      - run: cmake --build build
+      - run: ctest --test-dir build --output-on-failure
+        env:
+          QT_QPA_PLATFORM: offscreen

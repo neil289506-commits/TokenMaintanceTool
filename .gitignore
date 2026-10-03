@@ -1,0 +1,9 @@
+build*/
+stage/
+dist/
+out/
+tars/
+*.log
+.vs/
+.idea/
+CMakeUserPresets.json

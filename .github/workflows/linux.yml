@@ -1,0 +1,75 @@
+# Linux_AMD64 + Linux_ARM64
+# Qt arch names and runners follow neil289506-commits/Pomodoro linux.yml (PR #3):
+#   amd64: ubuntu-22.04      host linux       arch linux_gcc_64
+#   arm64: ubuntu-24.04-arm  host linux_arm64 arch linux_gcc_arm64   (Qt 6.8.3 arm64 packages need glibc >= 2.38)
+name: linux
+
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux_AMD64
+            os: ubuntu-22.04
+            qt_host: linux
+            qt_arch: linux_gcc_64
+          - name: Linux_ARM64
+            os: ubuntu-24.04-arm
+            qt_host: linux_arm64
+            qt_arch: linux_gcc_arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build g++ libssl-dev libgl1-mesa-dev libxkbcommon-dev
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: ${{ matrix.qt_host }}
+          target: desktop
+          arch: ${{ matrix.qt_arch }}
+          cache: true
+
+      - name: Configure
+        run: cmake -S . -B build-${{ matrix.name }} -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++ -DTV_QT_MIN=6.8.3
+
+      - name: Build
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build-${{ matrix.name }} --config Release 2>&1 | tee build.log || {
+            grep -E "error|undefined|FAILED" build.log | head -15 | while IFS= read -r l; do echo "::error::${l:0:380}"; done; exit 1; }
+
+      - name: Test
+        run: ctest --test-dir build-${{ matrix.name }} --output-on-failure
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Stage
+        run: |
+          mkdir -p stage/TokenVault dist
+          cp build-${{ matrix.name }}/TokenVault stage/TokenVault/
+          chmod +x stage/TokenVault/TokenVault
+          tar -cf dist/${{ matrix.name }}.tar -C stage TokenVault
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ matrix.name }}.tar
+          if-no-files-found: error

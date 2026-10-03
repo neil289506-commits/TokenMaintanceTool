@@ -1,0 +1,80 @@
+# On push to main: build all five targets (via workflow_call), and only if ALL succeed publish a
+# Pre-release  (Tag CP#<n>, name CP#<yyyymmdd-HHMMSS>+<n> in UTC+8, one zip per platform) — same scheme as Pomodoro.
+# Manual run (workflow_dispatch): builds and uploads the zips as the "release-preview" artifact, no release.
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    uses: ./.github/workflows/windows.yml
+  linux:
+    uses: ./.github/workflows/linux.yml
+  macos:
+    uses: ./.github/workflows/macos.yml
+
+  publish:
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: tars
+          merge-multiple: true
+
+      - name: Next release number
+        id: n
+        run: |
+          set -euo pipefail
+          last=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate -q '.[].tag_name' \
+                 | sed -n 's/^CP#\([0-9][0-9]*\)$/\1/p' | sort -n | tail -1 || true)
+          n=$(( ${last:-0} + 1 ))
+          stamp=$(TZ=Asia/Taipei date +%Y%m%d-%H%M%S)
+          echo "n=$n" >> "$GITHUB_OUTPUT"
+          echo "tag=CP#$n" >> "$GITHUB_OUTPUT"
+          echo "title=CP#${stamp}+$n" >> "$GITHUB_OUTPUT"
+
+      - name: Package zips
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          ls -l tars
+          for p in Windows_AMD64 Windows_ARM64 Mac_Universal Linux_AMD64 Linux_ARM64; do
+            python3 .github/scripts/package.py "$p" "tars/$p.tar" "out/TokenVault-$p-CP${{ steps.n.outputs.n }}.zip" "${{ steps.n.outputs.n }}"
+          done
+          (cd out && sha256sum *.zip > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Preview artifact (manual run)
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-preview
+          path: out/*
+
+      - name: Publish pre-release
+        if: github.event_name == 'push'
+        run: |
+          gh release create "${{ steps.n.outputs.tag }}" out/* \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "${{ steps.n.outputs.title }}" \
+            --notes "第 ${{ steps.n.outputs.n }} 次發佈（commit ${GITHUB_SHA::7}）。每個平台各自一個 zip，檔名結尾為 CP${{ steps.n.outputs.n }}。
+          - Windows_AMD64：解壓後執行 TokenVault.exe（已含 Qt 執行庫）
+          - Windows_ARM64：只有 TokenVault.exe，需自備 Qt 6.8.3 ARM64 執行庫
+          - Mac_Universal：TokenVault.app（arm64 + x86_64），需本機已安裝 Qt 6.8.3，未簽署
+          - Linux_AMD64 / Linux_ARM64：單一執行檔，需本機已安裝 Qt 6.8.3 執行庫（ARM64 需 glibc 2.38+）"

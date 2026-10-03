@@ -1,0 +1,84 @@
+# Mac_Universal (arm64 + x86_64 in one binary)
+# Qt: host mac / arch clang_64 (as in Pomodoro macos.yml). OpenSSL: built per-arch by vcpkg, then lipo-merged.
+name: macos
+
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Mac_Universal
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: mac
+          target: desktop
+          arch: clang_64
+          cache: true
+
+      - name: Universal static OpenSSL
+        run: |
+          set -euxo pipefail
+          VR="${VCPKG_INSTALLATION_ROOT:-}"
+          if [ -z "$VR" ] || [ ! -x "$VR/vcpkg" ]; then
+            git clone --depth 1 https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
+            "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+            VR="$RUNNER_TEMP/vcpkg"
+          fi
+          "$VR/vcpkg" install openssl:arm64-osx openssl:x64-osx
+          A="$VR/installed/arm64-osx"; X="$VR/installed/x64-osx"
+          U="$RUNNER_TEMP/openssl-universal"
+          mkdir -p "$U/lib"
+          cp -R "$A/include" "$U/include"
+          for lib in libcrypto.a libssl.a; do
+            lipo -create "$A/lib/$lib" "$X/lib/$lib" -output "$U/lib/$lib"
+          done
+          lipo -info "$U/lib/libcrypto.a"
+          echo "OPENSSL_UNIVERSAL=$U" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: >
+          cmake -S . -B build-macos -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++
+          -DTV_QT_MIN=6.8.3 -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+          -DOPENSSL_ROOT_DIR="$OPENSSL_UNIVERSAL" -DOPENSSL_USE_STATIC_LIBS=ON
+
+      - name: Build
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build-macos --config Release 2>&1 | tee build.log || {
+            grep -E "error|undefined|FAILED|ld:" build.log | head -15 | while IFS= read -r l; do echo "::error::${l:0:380}"; done; exit 1; }
+
+      - name: Check binary architecture
+        run: |
+          lipo -info build-macos/TokenVault.app/Contents/MacOS/TokenVault | tee archs.txt
+          grep -q x86_64 archs.txt && grep -q arm64 archs.txt
+
+      # arm64 slice runs natively on this runner
+      - name: Test
+        run: ctest --test-dir build-macos --output-on-failure
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Stage
+        run: |
+          mkdir -p stage dist
+          cp -R build-macos/TokenVault.app stage/
+          tar -cf dist/Mac_Universal.tar -C stage TokenVault.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mac_Universal
+          path: dist/Mac_Universal.tar
+          if-no-files-found: error

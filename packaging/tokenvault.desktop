@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=TokenVault
+Name[zh_TW]=Token 管理工具
+Comment=Encrypted token manager
+Comment[zh_TW]=加密的 Token 管理工具
+Exec=TokenVault
+Icon=tokenvault
+Categories=Utility;Security;
+Terminal=false

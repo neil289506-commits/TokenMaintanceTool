@@ -1,0 +1,133 @@
+# Windows_AMD64 + Windows_ARM64
+# Pattern taken from neil289506-commits/Pomodoro windows.yml (PR #3): Qt 6.8.3, a host Qt (win64_msvc2022_64) in
+# qt-host/, and for ARM64 a cross-compiled target Qt (win64_msvc2022_arm64_cross_compiled) in qt-target/,
+# built on windows-2022 with msvc_arch amd64_arm64.
+name: windows
+
+on:
+  push:
+    branches-ignore: [main]      # main is built by release.yml (workflow_call), so no double build
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  QT_VERSION: "6.8.3"
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows_AMD64
+            arm64: false
+            msvc_arch: amd64
+            qt_target_arch: win64_msvc2022_64
+            qt_target_dir: msvc2022_64
+            triplet: x64-windows-static-md
+          - name: Windows_ARM64
+            arm64: true
+            msvc_arch: amd64_arm64
+            qt_target_arch: win64_msvc2022_arm64_cross_compiled
+            qt_target_dir: msvc2022_arm64
+            triplet: arm64-windows-static-md
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt host (x64 tools)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          dir: ${{ github.workspace }}\qt-host
+          cache: true
+          set-env: false
+
+      - name: Install Qt ARM64 target
+        if: ${{ matrix.arm64 }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_arm64_cross_compiled
+          dir: ${{ github.workspace }}\qt-target
+          cache: true
+          set-env: false
+
+      - name: MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
+
+      - name: vcpkg OpenSSL (static)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          VR="${VCPKG_INSTALLATION_ROOT:-}"
+          if [ -z "$VR" ] || [ ! -e "$VR/vcpkg.exe" ]; then
+            git clone --depth 1 https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
+            "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat" -disableMetrics
+            VR="$RUNNER_TEMP/vcpkg"
+          fi
+          "$VR/vcpkg.exe" install "openssl:${{ matrix.triplet }}"
+          echo "VCPKG_ROOT=$(cygpath -m "$VR")" >> "$GITHUB_ENV"
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euxo pipefail
+          WS="$(cygpath -m "$GITHUB_WORKSPACE")"
+          HOST="$WS/qt-host/Qt/${QT_VERSION}/msvc2022_64"
+          COMMON=(-S . -B "build-${{ matrix.name }}" -G Ninja -DCMAKE_BUILD_TYPE=Release -DTV_QT_MIN=${QT_VERSION}
+                  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+                  -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }})
+          if [ "${{ matrix.arm64 }}" = "false" ]; then
+            cmake "${COMMON[@]}" -DCMAKE_PREFIX_PATH="$HOST"
+          else
+            TARGET="$WS/qt-target/Qt/${QT_VERSION}/${{ matrix.qt_target_dir }}"
+            # Cross build: x64 host compiles an ARM64 binary, so tests (which would have to run) are off.
+            cmake "${COMMON[@]}" -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=ARM64 \
+              -DQT_HOST_PATH="$HOST" -DCMAKE_PREFIX_PATH="$TARGET" -DTOKENVAULT_BUILD_TESTS=OFF
+          fi
+
+      - name: Build
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build "build-${{ matrix.name }}" --config Release 2>&1 | tee build.log || {
+            grep -E "error|FAILED|LNK" build.log | head -15 | while IFS= read -r l; do echo "::error::${l:0:380}"; done; exit 1; }
+
+      - name: Test
+        if: ${{ !matrix.arm64 }}
+        shell: bash
+        run: |
+          export PATH="$GITHUB_WORKSPACE/qt-host/Qt/${QT_VERSION}/msvc2022_64/bin:$PATH"
+          ctest --test-dir "build-${{ matrix.name }}" --output-on-failure -C Release
+
+      - name: Stage
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p stage/TokenVault dist
+          cp "build-${{ matrix.name }}/TokenVault.exe" stage/TokenVault/
+          if [ "${{ matrix.arm64 }}" = "false" ]; then
+            # x64: ship the Qt runtime next to the exe (same as Pomodoro). ARM64 has no runnable host
+            # windeployqt, so it ships the exe only and needs a Qt 6.8.3 ARM64 runtime.
+            "$GITHUB_WORKSPACE/qt-host/Qt/${QT_VERSION}/msvc2022_64/bin/windeployqt.exe" --release --no-translations stage/TokenVault/TokenVault.exe
+          fi
+          tar -cf "dist/${{ matrix.name }}.tar" -C stage TokenVault
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ matrix.name }}.tar
+          if-no-files-found: error
