@@ -1,48 +1,93 @@
-# TokenVault — Token 管理工具
+# TokenVault
 
-Qt 6.8 / C++17 / OpenSSL。Windows、macOS、Linux（x86_64 與 aarch64）。
+> 一個以 Qt 6 / C++17 開發的本機 Token 管理工具，使用 OpenSSL 保護敏感資料。
+
+[![C++](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
+[![Qt](https://img.shields.io/badge/Qt-6.5%2B-green.svg)](https://www.qt.io/)
+[![OpenSSL](https://img.shields.io/badge/OpenSSL-1.1.1%2B-lightgrey.svg)](https://www.openssl.org/)
+
+TokenVault 可在本機安全地管理 Token，支援密碼、鑰匙檔與 TOTP 驗證，並提供群組、搜尋、期限管理與自動鎖定功能。
+
+## 主要功能
+
+- 使用密碼、鑰匙檔及 TOTP 保護 Vault。
+- 支援密碼 + 鑰匙檔 + TOTP 的多因素驗證規則。
+- 以 AES-256-GCM 加密 Vault 索引與 Token 資料。
+- 使用 PBKDF2-HMAC-SHA512 衍生金鑰。
+- 使用 RSA-4096 OAEP 保護每個 Token 的加密金鑰。
+- Token 群組管理與關鍵字搜尋。
+- Token 有效期限、作廢、更新與刪除。
+- 期限提醒，3 天內到期的 Token 會特別標示。
+- 顯示 Token 後自動隱藏；複製後自動清除剪貼簿。
+- 閒置自動鎖定，也可使用 `Ctrl+L` 立即鎖定。
+- 支援淺色／深色外觀與可攜式資料目錄設定。
 
 ## 使用方式
-1. 第一次啟動：選擇保護方式——**密碼**、**鑰匙檔**、**TOTP 驗證碼**。規則：至少要有密碼或鑰匙檔其中一種；**密碼＋鑰匙檔（雙重認證）必須搭配 TOTP**；TOTP 不能單獨使用。
-2. 選了 TOTP 會顯示 QR Code，用 Google / Microsoft Authenticator、Aegis、1Password 等掃描，再輸入 App 上的 6 位數驗證碼確認後才能完成。
-3. 主畫面左邊是群組（含「全部」），右邊是 Token 卡片，上方可搜尋。左下角的 **＋** 可建立群組或 Token。
-4. 點 Token 進入詳細頁。**顯示 Token、作廢、更新、刪除、變更有效期限**都要重新驗證（密碼／鑰匙檔／TOTP）；改名稱與說明不用。
-5. Token 有效顯示綠勾，過期或作廢顯示紅叉，右側標籤顯示剩餘時間（3 天內為橘色）。啟動與每分鐘檢查並提醒過期。
-6. 顯示的 Token 30 秒後自動隱藏；複製後 30 秒自動清除剪貼簿；閒置 5 分鐘（可調）自動鎖定；`Ctrl+L` 立即鎖定。
-7. **設定 → 重設驗證方法**：先輸入目前的密碼／鑰匙檔／驗證碼，再改成新的組合（可保留或重新產生 TOTP）。RSA 金鑰與既有 Token 不需重新加密。
-8. **忘記密碼**（解鎖畫面左下的連結）：必須輸入「刪除全部」確認，會永久清空所有群組與 Token，然後從頭設定。沒有其他找回方式。
 
-外觀跟隨系統的淺色／深色（Qt ≥ 6.5）；可用環境變數 `TOKENVAULT_THEME=dark|light` 強制指定。
-資料夾：預設在系統的 AppData 位置，可用 `TOKENVAULT_DIR` 指定（方便攜帶或測試）。
+1. 第一次啟動時設定至少一種金鑰材料：密碼或鑰匙檔。
+2. 若同時使用密碼與鑰匙檔，必須再啟用 TOTP。
+3. 使用驗證器 App 掃描 QR Code，例如 Google Authenticator、Microsoft Authenticator、Aegis 或 1Password。
+4. 在主畫面建立群組與 Token。
+5. 點選 Token 可查看詳細資料；顯示 Token、作廢、更新、刪除及變更期限前需要重新驗證。
+6. 若忘記密碼，可從解鎖畫面選擇「忘記密碼」。此操作會永久刪除所有群組與 Token，且無法復原。
 
-## 建置
-```
+## 建置需求
+
+- CMake 3.21 或更新版本
+- C++17 相容編譯器
+- Qt 6.5 或更新版本（專案主要以 Qt 6.8 開發）
+- OpenSSL 1.1.1 或更新版本（建議使用 OpenSSL 3.x）
+
+## 建置與測試
+
+```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
-ctest --test-dir build
+ctest --test-dir build --output-on-failure
 ```
-需要 Qt ≥ 6.5（Linux 發行版內建的 Qt 6.4 可用 `-DTV_QT_MIN=6.4`）與 OpenSSL ≥ 1.1.1（建議 3.x）。
 
-## CI（結構沿用 Pomodoro repo）
-`.github/workflows/`：
+若系統安裝的 Qt 版本低於專案預設版本，可透過 `TV_QT_MIN` 指定最低版本：
 
-| 檔案 | 內容 |
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTV_QT_MIN=6.4
+```
+
+## 設定
+
+| 環境變數 | 說明 |
 |---|---|
-| `windows.yml` | Windows_AMD64（原生）、Windows_ARM64（在 x64 上交叉編譯）。x64 以 windeployqt 附上 Qt 執行庫 |
-| `linux.yml` | Linux_AMD64（ubuntu-22.04）、Linux_ARM64（ubuntu-24.04-arm，需 glibc ≥ 2.38） |
-| `macos.yml` | Mac_Universal（arm64 + x86_64，OpenSSL 以 lipo 合併） |
-| `release.yml` | 推送到 `main` 時呼叫上面三個；**五個全部成功**才發佈 Pre-release（Tag `CP#<次數>`，名稱 `CP#<日期時間>+<次數>`，UTC+8）。手動執行則只產生 `release-preview` artifact |
-| `distro.yml` | Ubuntu / Debian / Fedora / Arch / openSUSE 以各自的 Qt + OpenSSL 編譯並測試（僅供參考，不擋發佈） |
+| `TOKENVAULT_DIR` | 指定 Vault 資料目錄，適合攜帶式使用或測試 |
+| `TOKENVAULT_THEME` | 強制指定外觀：`dark` 或 `light` |
 
-`.github/scripts/package.py` 把各平台的 tar 轉成 `TokenVault-<平台>-CP<次數>.zip`（保留執行權限，附 `BUILD_INFO.txt`）。
+預設資料會儲存在作業系統的 AppData／應用程式資料目錄中。
 
-| zip | 內容 |
-|---|---|
-| Windows_AMD64 | `TokenVault.exe` + Qt 執行庫，解壓即可執行 |
-| Windows_ARM64 | 只有 `TokenVault.exe`，需自備 Qt 6.8.3 ARM64 執行庫 |
-| Mac_Universal | `TokenVault.app`，需本機已安裝 Qt 6.8.3，未簽署 |
-| Linux_AMD64 / Linux_ARM64 | 單一執行檔，需本機已安裝 Qt 6.8.3 執行庫 |
+## 專案結構
 
-（這些「需自備 Qt」的限制與 Pomodoro 相同；首次 CI 全綠後再考慮加上 macdeployqt / AppImage 打包。）
+```text
+src/                 核心程式與 Qt UI
+src/crypto.*         加密與雜湊功能
+src/totp.*           TOTP 驗證
+src/vault.*          Vault 儲存、加密與 Token 管理
+third_party/         第三方元件（包含 qrcodegen）
+tests/               單元測試
+packaging/           Linux 安裝與桌面檔案
+DESIGN.md            加密架構、設計理由與限制
+```
 
-設計理由與來源見 `DESIGN.md`。
+## 安全性說明
+
+- TOTP 是介面層的額外驗證，不會直接成為檔案加密金鑰的一部分。
+- Token 的「作廢」是本機狀態標記，不會呼叫外部服務撤銷 Token。
+- Qt 的字串元件無法保證密碼與 Token 從記憶體完全清除。
+- 檔案刪除前會嘗試覆寫，但 SSD 與寫時複製檔案系統不保證實體資料完全清除。
+- 若攻擊者同時取得 Vault 檔案與密碼／鑰匙檔，仍可能解密資料；請使用足夠強度的密碼並妥善保管鑰匙檔。
+
+完整的加密架構與設計取捨請參閱 [`DESIGN.md`](DESIGN.md)。
+
+## 第三方授權
+
+第三方元件與授權資訊請參閱 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+
+## 授權
+
+目前尚未在儲存庫中指定正式授權條款。若要重新散布或修改本專案，請先確認專案作者的授權意願。
