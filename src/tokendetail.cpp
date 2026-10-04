@@ -2,6 +2,8 @@
 #include "authdialogs.h"
 #include "editdialogs.h"
 #include "icons.h"
+#include "uihelpers.h"
+#include <QFrame>
 #include <QApplication>
 #include <QClipboard>
 #include <QCryptographicHash>
@@ -28,72 +30,92 @@ TokenDetailDialog::TokenDetailDialog(Vault &vault, const GroupInfo &group, const
 {
     setWindowTitle(tr("Token 詳細資料"));
     setModal(true);
-    setMinimumWidth(480);
+    setMinimumWidth(500);
     auto *l = new QVBoxLayout(this);
+    l->setContentsMargins(24, 22, 24, 20);
+    l->setSpacing(12);
 
+    // status header
     auto *top = new QHBoxLayout;
+    top->setSpacing(12);
     m_statusIcon = new QLabel;
-    m_statusText = new QLabel;
-    QFont f = m_statusText->font();
-    f.setBold(true);
-    m_statusText->setFont(f);
+    m_statusIcon->setFixedSize(40, 40);
+    m_statusText = ui::label(QString(), "title");
     top->addWidget(m_statusIcon);
     top->addWidget(m_statusText, 1);
     l->addLayout(top);
 
-    auto *form = new QFormLayout;
+    // card: name + note (no verification needed)
+    auto *c1 = new QFrame;
+    c1->setProperty("card", true);
+    auto *f1 = new QVBoxLayout(c1);
+    f1->setContentsMargins(16, 14, 16, 14);
+    f1->setSpacing(8);
+    f1->addWidget(ui::label(tr("名稱"), "muted"));
     m_name = new QLineEdit;
+    f1->addWidget(m_name);
+    f1->addWidget(ui::label(tr("說明"), "muted"));
     m_note = new QPlainTextEdit;
-    m_note->setFixedHeight(80);
-    form->addRow(tr("名稱"), m_name);
-    form->addRow(tr("說明"), m_note);
+    m_note->setFixedHeight(76);
+    f1->addWidget(m_note);
     auto *saveRow = new QHBoxLayout;
-    auto *save = new QPushButton(tr("儲存名稱與說明"));
     saveRow->addStretch(1);
+    auto *save = ui::button(tr("儲存名稱與說明"));
     saveRow->addWidget(save);
-    form->addRow(QString(), saveRow);
-    m_info = new QLabel;
-    m_info->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    form->addRow(tr("資訊"), m_info);
+    f1->addLayout(saveRow);
+    l->addWidget(c1);
 
+    // card: the secret
+    auto *c2 = new QFrame;
+    c2->setProperty("card", true);
+    auto *f2 = new QVBoxLayout(c2);
+    f2->setContentsMargins(16, 14, 16, 14);
+    f2->setSpacing(8);
+    f2->addWidget(ui::label(tr("Token"), "muted"));
     m_secret = new QLineEdit(kDot);
     m_secret->setReadOnly(true);
-    m_show = new QPushButton(tr("顯示 Token"));
-    m_copy = new QPushButton(tr("複製"));
+    m_show = ui::button(tr("顯示"), "primary");
+    m_copy = ui::button(tr("複製"));
     m_copy->setEnabled(false);
     auto *srow = new QHBoxLayout;
     srow->addWidget(m_secret, 1);
     srow->addWidget(m_show);
     srow->addWidget(m_copy);
-    form->addRow(tr("Token"), srow);
-    m_countdown = new QLabel;
-    m_countdown->setStyleSheet("color:gray");
-    form->addRow(QString(), m_countdown);
+    f2->addLayout(srow);
+    m_countdown = ui::label(QString(), "muted");
+    f2->addWidget(m_countdown);
+    l->addWidget(c2);
 
+    // card: dates + expiry
+    auto *c3 = new QFrame;
+    c3->setProperty("card", true);
+    auto *f3 = new QVBoxLayout(c3);
+    f3->setContentsMargins(16, 14, 16, 14);
+    f3->setSpacing(8);
+    m_info = new QLabel;
+    m_info->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    f3->addWidget(m_info);
+    f3->addWidget(ui::label(tr("有效期限"), "muted"));
     m_expiry = new ExpiryPicker;
     auto *erow = new QHBoxLayout;
-    auto *ebtn = new QPushButton(tr("變更期限"));
+    auto *ebtn = ui::button(tr("變更期限"));
     erow->addWidget(m_expiry, 1);
     erow->addWidget(ebtn);
-    form->addRow(tr("有效期限"), erow);
-    l->addLayout(form);
+    f3->addLayout(erow);
+    l->addWidget(c3);
 
     auto *act = new QHBoxLayout;
-    auto *bRevoke = new QPushButton(tr("作廢"));
-    auto *bRenew = new QPushButton(tr("更新 Token"));
-    auto *bDel = new QPushButton(tr("刪除"));
-    bDel->setStyleSheet("color:#D93F3F");
-    auto *bClose = new QPushButton(tr("關閉"));
+    auto *bRevoke = ui::button(tr("作廢"), "danger");
+    auto *bRenew = ui::button(tr("更新 Token"));
+    auto *bDel = ui::button(tr("刪除"), "danger");
+    auto *bClose = ui::button(tr("關閉"));
     act->addWidget(bRevoke);
     act->addWidget(bRenew);
     act->addWidget(bDel);
     act->addStretch(1);
     act->addWidget(bClose);
     l->addLayout(act);
-    auto *hint = new QLabel(tr("顯示 Token、作廢、更新、刪除與變更期限都需要重新驗證；名稱與說明不需要。"));
-    hint->setStyleSheet("color:gray");
-    hint->setWordWrap(true);
-    l->addWidget(hint);
+    l->addWidget(ui::label(tr("顯示、作廢、更新、刪除與變更期限都需要重新驗證；名稱與說明不需要。"), "muted", true));
 
     m_hideTimer = new QTimer(this);
     m_hideTimer->setInterval(1000);
@@ -126,7 +148,7 @@ bool TokenDetailDialog::authorize(const QString &reason)
 void TokenDetailDialog::refresh()
 {
     const auto st = m_t.status();
-    m_statusIcon->setPixmap(icons::statusIcon(st, 24).pixmap(24, 24));
+    m_statusIcon->setPixmap(icons::statusIcon(st, 40).pixmap(40, 40));
     switch (st) {
     case TokenInfo::Valid: m_statusText->setText(tr("有效")); break;
     case TokenInfo::Expired: m_statusText->setText(tr("已過期")); break;
@@ -181,7 +203,7 @@ void TokenDetailDialog::hideSecret()
     m_hideTimer->stop();
     m_revealed.wipe();
     m_secret->setText(kDot);
-    m_show->setText(tr("顯示 Token"));
+    m_show->setText(tr("顯示"));
     m_copy->setEnabled(false);
     m_countdown->clear();
 }

@@ -1,4 +1,5 @@
 #include "vault.h"
+#include "totp.h"
 #include <QDir>
 #include <QFileInfo>
 #include <QObject>
@@ -94,6 +95,7 @@ struct Vault::Header {
     QByteArray pub;
     QByteArray encPriv;
     QByteArray encIndex;
+    QByteArray encTotp;
     QByteArray aadSuffix() const
     {
         return QByteArray("|m") + QByteArray::number(int(mode)) + "|i" + QByteArray::number(iterations) + "|s" + salt.toHex();
@@ -121,7 +123,7 @@ bool Vault::readHeader(Header *h, QString *err) const
     if (!readJson(vaultFile(), &o)) { if (err) *err = QObject::tr("無法讀取 vault.json"); return false; }
     if (o.value("v").toInt() != kVersion) { if (err) *err = QObject::tr("不支援的保險庫版本"); return false; }
     const int m = o.value("mode").toInt();
-    if (m < 1 || m > 3) { if (err) *err = QObject::tr("保險庫檔案已損毀"); return false; }
+    if (m < 1 || m > 7 || !(m & (AuthPassphrase | AuthKeyfile))) { if (err) *err = QObject::tr("保險庫檔案已損毀"); return false; }
     h->mode = AuthMode(m);
     const QJsonObject kdf = o.value("kdf").toObject();
     h->iterations = kdf.value("iter").toInt();
@@ -129,7 +131,9 @@ bool Vault::readHeader(Header *h, QString *err) const
     h->pub = unb64(o.value("pub"));
     h->encPriv = unb64(o.value("encPriv"));
     h->encIndex = unb64(o.value("encIndex"));
-    if (h->iterations < 100000 || h->salt.size() < 16 || h->pub.isEmpty() || h->encPriv.isEmpty() || h->encIndex.isEmpty()) {
+    h->encTotp = unb64(o.value("encTotp"));
+    if (h->iterations < 100000 || h->salt.size() < 16 || h->pub.isEmpty() || h->encPriv.isEmpty() || h->encIndex.isEmpty()
+        || ((h->mode & AuthTotp) && h->encTotp.isEmpty())) {
         if (err) *err = QObject::tr("保險庫檔案已損毀");
         return false;
     }
@@ -144,8 +148,18 @@ AuthMode Vault::mode() const
 }
 
 // Material fed to PBKDF2: "TV1" | mode | len(pass) | pass | SHA-512(keyfile)
-static Result buildMaterial(AuthMode mode, const Credentials &c, SecureBytes *out)
+QString validateMode(AuthMode m)
 {
+    if (!(m & (AuthPassphrase | AuthKeyfile))) return QObject::tr("請至少選擇「密碼」或「鑰匙檔」其中一種");
+    if ((m & AuthPassphrase) && (m & AuthKeyfile) && !(m & AuthTotp))
+        return QObject::tr("同時使用密碼與鑰匙檔（雙重認證）時，必須搭配 TOTP");
+    return {};
+}
+
+static Result buildMaterial(AuthMode mode, const Credentials &c, SecureBytes *out, bool needTotpCode)
+{
+    // The TOTP code is not key material; it is only required when *authenticating* against an existing vault.
+    if (needTotpCode && (mode & AuthTotp) && c.totpCode.simplified().isEmpty()) return Result::fail(QObject::tr("請輸入 TOTP 驗證碼"));
     QByteArray m("TV1");
     m.append(char(mode));
     if (mode & AuthPassphrase) {
@@ -167,31 +181,42 @@ static Result buildMaterial(AuthMode mode, const Credentials &c, SecureBytes *ou
     return Result::success();
 }
 
-Result Vault::deriveAndOpen(const Credentials &c, const Header &h, SecureBytes *priv, SecureBytes *index) const
+Result Vault::deriveAndOpen(const Credentials &c, const Header &h, SecureBytes *priv, SecureBytes *index,
+                            SecureBytes *totpSecret, bool checkTotp) const
 {
     SecureBytes material;
-    if (Result r = buildMaterial(h.mode, c, &material); !r) return r;
+    if (Result r = buildMaterial(h.mode, c, &material, checkTotp); !r) return r;
     SecureBytes kdf = pbkdf2Sha512(material.data(), h.salt, h.iterations, 64);
     SecureBytes kek(kdf.data().left(kAesKeyLen));
     const QByteArray suffix = h.aadSuffix();
     SecureBytes p, i;
     if (!aesGcmOpen(kek, h.encPriv, "TV1|priv" + suffix, &p) || !aesGcmOpen(kek, h.encIndex, "TV1|idx" + suffix, &i))
-        return Result::fail(QObject::tr("密碼或鑰匙檔不正確"));
+        return Result::fail(QObject::tr("驗證失敗：密碼、鑰匙檔或驗證碼不正確"));
     if (i.size() != kAesKeyLen) return Result::fail(QObject::tr("保險庫檔案已損毀"));
+    SecureBytes ts;
+    if (h.mode & AuthTotp) {
+        // Same generic message for a wrong code, so the dialog does not reveal which factor failed.
+        if (!aesGcmOpen(kek, h.encTotp, "TV1|totp" + suffix, &ts)
+            || (checkTotp && !totp::verify(ts.data(), c.totpCode, QDateTime::currentSecsSinceEpoch())))
+            return Result::fail(QObject::tr("驗證失敗：密碼、鑰匙檔或驗證碼不正確"));
+    }
+    if (totpSecret) *totpSecret = ts;
     if (priv) *priv = p;
     if (index) *index = i;
     return Result::success();
 }
 
-Result Vault::writeVaultFile(AuthMode mode, const Credentials &c, EVP_PKEY *pub,
-                             const SecureBytes &privDer, const SecureBytes &index) const
+Result Vault::writeVaultFile(AuthMode mode, const Credentials &c, EVP_PKEY *pub, const SecureBytes &privDer,
+                             const SecureBytes &index, const SecureBytes &totpSecret) const
 {
+    if (QString e = validateMode(mode); !e.isEmpty()) return Result::fail(e);
+    if ((mode & AuthTotp) && totpSecret.size() != totp::kSecretBytes) return Result::fail(QObject::tr("缺少 TOTP 金鑰"));
     Header h;
     h.mode = mode;
     h.iterations = kPbkdf2Iterations;
     h.salt = randomBytes(32);
     SecureBytes material;
-    if (Result r = buildMaterial(mode, c, &material); !r) return r;
+    if (Result r = buildMaterial(mode, c, &material, false); !r) return r;
     SecureBytes kdf = pbkdf2Sha512(material.data(), h.salt, h.iterations, 64);
     SecureBytes kek(kdf.data().left(kAesKeyLen));
     const QByteArray suffix = h.aadSuffix();
@@ -207,12 +232,14 @@ Result Vault::writeVaultFile(AuthMode mode, const Credentials &c, EVP_PKEY *pub,
     o["pub"] = QString::fromLatin1(b64(pubToDer(pub)));
     o["encPriv"] = QString::fromLatin1(b64(aesGcmSeal(kek, privDer.data(), "TV1|priv" + suffix)));
     o["encIndex"] = QString::fromLatin1(b64(aesGcmSeal(kek, index.data(), "TV1|idx" + suffix)));
+    if (mode & AuthTotp)
+        o["encTotp"] = QString::fromLatin1(b64(aesGcmSeal(kek, totpSecret.data(), "TV1|totp" + suffix)));
     QString err;
     if (!writeJsonAtomic(vaultFile(), o, &err)) return Result::fail(err);
     return Result::success();
 }
 
-Result Vault::create(AuthMode mode, const Credentials &c)
+Result Vault::create(AuthMode mode, const Credentials &c, const QByteArray &totpSecret)
 {
     if (exists()) return Result::fail(QObject::tr("保險庫已存在"));
     try {
@@ -220,7 +247,7 @@ Result Vault::create(AuthMode mode, const Credentials &c)
         PKey key = rsaGenerate();
         SecureBytes priv = privToDer(key.get());
         SecureBytes index(randomBytes(kAesKeyLen));
-        if (Result r = writeVaultFile(mode, c, key.get(), priv, index); !r) return r;
+        if (Result r = writeVaultFile(mode, c, key.get(), priv, index, SecureBytes(totpSecret)); !r) return r;
         m_pub = pubFromDer(pubToDer(key.get()));
         m_index = index;
         QDir().mkpath(m_dir + QStringLiteral("/Token"));
@@ -260,21 +287,43 @@ Result Vault::verify(const Credentials &c) const
     }
 }
 
-Result Vault::changeCredentials(const Credentials &oldC, AuthMode newMode, const Credentials &newC)
+Result Vault::changeCredentials(const Credentials &oldC, AuthMode newMode, const Credentials &newC,
+                                const QByteArray &newTotpSecret, bool oldTotpAlreadyVerified)
 {
+    if (QString e = validateMode(newMode); !e.isEmpty()) return Result::fail(e);
     Header h;
     QString err;
     if (!readHeader(&h, &err)) return Result::fail(err);
     try {
-        SecureBytes priv, idx;
-        if (Result r = deriveAndOpen(oldC, h, &priv, &idx); !r) return r;
+        SecureBytes priv, idx, oldTotp;
+        if (Result r = deriveAndOpen(oldC, h, &priv, &idx, &oldTotp, !oldTotpAlreadyVerified); !r) return r;
         PKey pub = pubFromDer(h.pub);
         if (!pub) return Result::fail(QObject::tr("保險庫檔案已損毀"));
+        SecureBytes ts;
+        if (newMode & AuthTotp) {
+            ts = !newTotpSecret.isEmpty() ? SecureBytes(newTotpSecret) : oldTotp;
+            if (ts.isEmpty()) return Result::fail(QObject::tr("請先設定 TOTP"));
+        }
         // Same RSA pair and index key => no token file needs rewriting.
-        return writeVaultFile(newMode, newC, pub.get(), priv, idx);
+        return writeVaultFile(newMode, newC, pub.get(), priv, idx, ts);
     } catch (const std::exception &e) {
         return Result::fail(QString::fromUtf8(e.what()));
     }
+}
+
+Result Vault::wipeAll()
+{
+    lock();
+    secureRemove(vaultFile());
+    const QDir root(m_dir + QStringLiteral("/Token"));
+    for (const QString &g : root.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        QDir gd(root.filePath(g));
+        for (const QString &f : gd.entryList(QDir::Files | QDir::Hidden)) secureRemove(gd.filePath(f));
+        QDir().rmdir(gd.path());
+    }
+    QDir().rmdir(root.path());
+    if (exists() || root.exists()) return Result::fail(QObject::tr("無法完全刪除資料，請手動刪除資料夾：%1").arg(m_dir));
+    return Result::success();
 }
 
 void Vault::lock()

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(TokenVault VERSION 1.0.0 LANGUAGES CXX)
+project(TokenVault VERSION 1.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,6 +15,7 @@ option(TOKENVAULT_BUILD_TESTS "Build crypto/vault tests" ON)
 # ---- core library (no GUI) --------------------------------------------------
 add_library(tvcore STATIC
     src/crypto.cpp  src/crypto.h
+    src/totp.cpp    src/totp.h
     src/vault.cpp   src/vault.h
 )
 target_include_directories(tvcore PUBLIC src)
@@ -26,6 +27,10 @@ endif()
 # ---- application -------------------------------------------------------------
 qt_add_executable(TokenVault WIN32 MACOSX_BUNDLE
     src/main.cpp
+    src/theme.cpp        src/theme.h
+    src/uihelpers.cpp    src/uihelpers.h
+    src/qrimage.cpp      src/qrimage.h
+    third_party/qrcodegen/qrcodegen.cpp
     src/icons.cpp        src/icons.h
     src/busy.h
     src/authdialogs.cpp  src/authdialogs.h
@@ -33,6 +38,7 @@ qt_add_executable(TokenVault WIN32 MACOSX_BUNDLE
     src/tokendetail.cpp  src/tokendetail.h
     src/mainwindow.cpp   src/mainwindow.h
 )
+target_include_directories(TokenVault PRIVATE third_party/qrcodegen)
 target_link_libraries(TokenVault PRIVATE tvcore Qt6::Gui Qt6::Widgets Qt6::Concurrent)
 set_target_properties(TokenVault PROPERTIES
     MACOSX_BUNDLE_BUNDLE_NAME "TokenVault"

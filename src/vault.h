@@ -13,11 +13,20 @@
 
 namespace tv {
 
-enum AuthMode { AuthPassphrase = 1, AuthKeyfile = 2, AuthBoth = 3 };
+// Authentication methods (bit flags). Passphrase and key file are *key material* (they derive the KEK).
+// TOTP is an additional verification gate: its secret is stored encrypted under the KEK, so the 6-digit code
+// can only be checked after the passphrase / key file were right.
+enum AuthMode { AuthPassphrase = 1, AuthKeyfile = 2, AuthTotp = 4 };
+inline AuthMode operator|(AuthMode a, AuthMode b) { return AuthMode(int(a) | int(b)); }
+
+// Rules: at least one of passphrase / key file; using BOTH ("two-factor") requires TOTP as well.
+// Returns an error message, or an empty string when the combination is allowed.
+QString validateMode(AuthMode m);
 
 struct Credentials {
     QString passphrase;   // used when mode includes passphrase
     QString keyfile;      // path; used when mode includes keyfile
+    QString totpCode;     // 6 digits; used when mode includes TOTP
 };
 
 struct Result {
@@ -62,11 +71,20 @@ public:
     AuthMode mode() const;                   // from vault.json (valid only if exists())
 
     // --- slow (PBKDF2 / RSA keygen): call from a worker thread -------------
-    Result create(AuthMode mode, const Credentials &c);   // also leaves the vault unlocked
+    Result create(AuthMode mode, const Credentials &c, const QByteArray &totpSecret = QByteArray());   // leaves it unlocked
     Result unlock(const Credentials &c);
     Result verify(const Credentials &c) const;             // re-authentication, no state change
-    Result changeCredentials(const Credentials &oldC, AuthMode newMode, const Credentials &newC);
+    // Needs the current credentials (incl. current TOTP code). If newMode has TOTP and newTotpSecret is empty,
+    // the existing TOTP secret is kept (only possible when the old mode had TOTP).
+    // `oldTotpAlreadyVerified`: the caller just passed a full verification (incl. TOTP) in the UI, so the
+    // (possibly expired) code in oldC is not checked again; passphrase / key file are always re-checked.
+    Result changeCredentials(const Credentials &oldC, AuthMode newMode, const Credentials &newC,
+                             const QByteArray &newTotpSecret = QByteArray(), bool oldTotpAlreadyVerified = false);
     Result revealToken(const QString &groupId, const QString &id, const Credentials &c, SecureBytes *out) const;
+
+    // "Forgot password": permanently deletes vault.json and every file under Token/. Nothing else in the
+    // folder is touched. Needs no credentials, by design.
+    Result wipeAll();
 
     void lock();
     bool isUnlocked() const { return !m_index.isEmpty() && m_pub; }
@@ -96,9 +114,10 @@ public:
 private:
     struct Header;
     bool readHeader(Header *h, QString *err) const;
-    Result deriveAndOpen(const Credentials &c, const Header &h, SecureBytes *priv, SecureBytes *index) const;
-    Result writeVaultFile(AuthMode mode, const Credentials &c, EVP_PKEY *pub,
-                          const SecureBytes &privDer, const SecureBytes &index) const;
+    Result deriveAndOpen(const Credentials &c, const Header &h, SecureBytes *priv, SecureBytes *index,
+                         SecureBytes *totpSecret = nullptr, bool checkTotp = true) const;
+    Result writeVaultFile(AuthMode mode, const Credentials &c, EVP_PKEY *pub, const SecureBytes &privDer,
+                          const SecureBytes &index, const SecureBytes &totpSecret) const;
 
     QString m_dir;
     PKey m_pub;

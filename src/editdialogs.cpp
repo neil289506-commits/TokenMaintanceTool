@@ -1,9 +1,9 @@
 #include "editdialogs.h"
 #include "icons.h"
+#include "uihelpers.h"
 #include <QButtonGroup>
 #include <QComboBox>
 #include <QDateTimeEdit>
-#include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -18,16 +18,6 @@
 using namespace tv;
 
 namespace {
-QDialogButtonBox *okCancel(QDialog *d)
-{
-    auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    bb->button(QDialogButtonBox::Ok)->setText(QObject::tr("確定"));
-    bb->button(QDialogButtonBox::Cancel)->setText(QObject::tr("取消"));
-    QObject::connect(bb, &QDialogButtonBox::accepted, d, &QDialog::accept);
-    QObject::connect(bb, &QDialogButtonBox::rejected, d, &QDialog::reject);
-    return bb;
-}
-
 QLineEdit *makeTokenEdit(QLabel **lenLabel)
 {
     auto *t = new QLineEdit;
@@ -36,7 +26,7 @@ QLineEdit *makeTokenEdit(QLabel **lenLabel)
     t->setPlaceholderText(QObject::tr("貼上或輸入 Token（輸入後會隱藏）"));
     t->setClearButtonEnabled(false);
     auto *len = new QLabel;
-    len->setStyleSheet("color:gray");
+    len->setProperty("role", "muted");
     QObject::connect(t, &QLineEdit::textChanged, len, [len](const QString &s) {
         len->setText(s.isEmpty() ? QString() : QObject::tr("已輸入 %1 個字元").arg(s.size()));
     });
@@ -102,9 +92,14 @@ GroupDialog::GroupDialog(const GroupInfo &g, bool editing, QWidget *parent) : QD
 {
     setWindowTitle(editing ? tr("編輯群組") : tr("建立群組"));
     setModal(true);
-    setMinimumWidth(420);
+    setMinimumWidth(440);
     auto *l = new QVBoxLayout(this);
+    l->setContentsMargins(24, 22, 24, 20);
+    l->setSpacing(12);
+    l->addWidget(ui::header(ui::badge(editing ? QStringLiteral("✎") : QStringLiteral("＋")),
+                            editing ? tr("編輯群組") : tr("建立群組"), tr("群組用來整理 Token，可以自訂名稱、圖示與說明。")));
     auto *form = new QFormLayout;
+    form->setVerticalSpacing(10);
     m_name = new QLineEdit(g.name);
     m_name->setPlaceholderText(tr("群組名稱"));
     m_note = new QPlainTextEdit(g.note);
@@ -123,7 +118,7 @@ GroupDialog::GroupDialog(const GroupInfo &g, bool editing, QWidget *parent) : QD
     for (int i = 0; i < icons::shapeCount(); ++i) {
         auto *b = new QToolButton;
         b->setCheckable(true);
-        b->setAutoRaise(true);
+        b->setProperty("swatch", true);
         b->setIconSize(QSize(28, 28));
         b->setToolTip(icons::shapeName(i));
         m_shapes->addButton(b, i);
@@ -135,6 +130,7 @@ GroupDialog::GroupDialog(const GroupInfo &g, bool editing, QWidget *parent) : QD
     for (int i = 0; i < icons::colorCount(); ++i) {
         auto *b = new QToolButton;
         b->setCheckable(true);
+        b->setProperty("swatch", true);
         b->setIconSize(QSize(20, 20));
         b->setIcon(icons::shapeIcon(0, i, 20));
         m_colors->addButton(b, i);
@@ -145,7 +141,7 @@ GroupDialog::GroupDialog(const GroupInfo &g, bool editing, QWidget *parent) : QD
     m_colors->button(color)->setChecked(true);
     connect(m_colors, &QButtonGroup::idClicked, this, [this] { refreshShapeIcons(); });
     refreshShapeIcons();
-    l->addWidget(okCancel(this));
+    l->addLayout(ui::footer(this, nullptr, nullptr));
     m_name->setFocus();
 }
 
@@ -174,9 +170,14 @@ TokenDialog::TokenDialog(const QList<GroupInfo> &groups, const QString &preselec
 {
     setWindowTitle(tr("建立 Token"));
     setModal(true);
-    setMinimumWidth(440);
+    setMinimumWidth(460);
     auto *l = new QVBoxLayout(this);
+    l->setContentsMargins(24, 22, 24, 20);
+    l->setSpacing(12);
+    l->addWidget(ui::header(ui::badge(QStringLiteral("＋")), tr("建立 Token"),
+                            tr("Token 會用 AES-256 + RSA-4096 加密後存成 .tkn 檔。")));
     auto *form = new QFormLayout;
+    form->setVerticalSpacing(10);
     m_group = new QComboBox;
     for (const GroupInfo &g : groups) {
         m_group->addItem(icons::groupIcon(g.icon, 20), g.name, g.id);
@@ -196,7 +197,7 @@ TokenDialog::TokenDialog(const QList<GroupInfo> &groups, const QString &preselec
     form->addRow(QString(), m_len);
     form->addRow(tr("有效期限"), m_expiry);
     l->addLayout(form);
-    l->addWidget(okCancel(this));
+    l->addLayout(ui::footer(this, nullptr, nullptr));
     m_name->setFocus();
 }
 
@@ -220,17 +221,21 @@ RenewDialog::RenewDialog(const QString &tokenName, QWidget *parent) : QDialog(pa
 {
     setWindowTitle(tr("更新 Token"));
     setModal(true);
-    setMinimumWidth(420);
+    setMinimumWidth(440);
     auto *l = new QVBoxLayout(this);
-    l->addWidget(new QLabel(tr("輸入「%1」的新 Token，舊的內容會被覆蓋，且會清除「已作廢」狀態。").arg(tokenName)));
+    l->setContentsMargins(24, 22, 24, 20);
+    l->setSpacing(12);
+    l->addWidget(ui::header(ui::badge(QStringLiteral("↻")), tr("更新 Token"),
+                            tr("輸入「%1」的新 Token。舊內容會被覆蓋，且會清除「已作廢」狀態。").arg(tokenName)));
     auto *form = new QFormLayout;
+    form->setVerticalSpacing(10);
     m_token = makeTokenEdit(&m_len);
     m_expiry = new ExpiryPicker(true);
     form->addRow(tr("新 Token"), m_token);
     form->addRow(QString(), m_len);
     form->addRow(tr("有效期限"), m_expiry);
     l->addLayout(form);
-    l->addWidget(okCancel(this));
+    l->addLayout(ui::footer(this, nullptr, nullptr));
     m_token->setFocus();
 }
 
