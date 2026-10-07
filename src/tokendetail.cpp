@@ -5,8 +5,6 @@
 #include "uihelpers.h"
 #include <QFrame>
 #include <QApplication>
-#include <QClipboard>
-#include <QCryptographicHash>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -14,8 +12,8 @@
 #include <QLineEdit>
 #include <QLocale>
 #include <QMessageBox>
-#include <QMimeData>
 #include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -24,6 +22,60 @@ using namespace tv;
 
 static constexpr int kRevealSeconds = 30;
 static const QString kDot = QStringLiteral("●");
+
+// Pop-up that shows the token for 30 seconds, then locks itself again. There is deliberately no copy
+// button and no clipboard handling here; the text is selectable like any read-only text.
+class RevealDialog : public QDialog {
+public:
+    RevealDialog(const QString &tokenName, const QString &token, QWidget *parent) : QDialog(parent), m_left(kRevealSeconds)
+    {
+        setWindowTitle(tr("Token"));
+        setModal(true);
+        setMinimumWidth(460);
+        auto *l = new QVBoxLayout(this);
+        l->setContentsMargins(24, 22, 24, 20);
+        l->setSpacing(12);
+        l->addWidget(ui::header(ui::lockBadge(), tokenName, tr("驗證成功。倒數結束後會自動鎖定。")));
+        m_text = new QPlainTextEdit;
+        m_text->setReadOnly(true);
+        m_text->setPlainText(token);
+        QFont mono(QStringLiteral("monospace"));
+        mono.setStyleHint(QFont::Monospace);
+        mono.setPixelSize(15);
+        m_text->setFont(mono);
+        m_text->setFixedHeight(110);
+        l->addWidget(m_text);
+        m_bar = new QProgressBar;
+        m_bar->setRange(0, kRevealSeconds);
+        m_bar->setValue(kRevealSeconds);
+        m_bar->setTextVisible(false);
+        l->addWidget(m_bar);
+        m_label = ui::label(tr("%1 秒後自動鎖定").arg(m_left), "muted");
+        l->addWidget(m_label);
+        auto *row = new QHBoxLayout;
+        row->addStretch(1);
+        auto *lock = ui::button(tr("鎖定"), "primary");
+        lock->setDefault(true);
+        row->addWidget(lock);
+        l->addLayout(row);
+        connect(lock, &QPushButton::clicked, this, &QDialog::accept);
+        m_timer = new QTimer(this);
+        m_timer->setInterval(1000);
+        connect(m_timer, &QTimer::timeout, this, [this] {
+            if (--m_left <= 0) { accept(); return; }
+            m_bar->setValue(m_left);
+            m_label->setText(tr("%1 秒後自動鎖定").arg(m_left));
+        });
+        m_timer->start();
+        connect(this, &QDialog::finished, this, [this] { m_text->clear(); });     // drop the plaintext on close
+    }
+private:
+    int m_left;
+    QPlainTextEdit *m_text;
+    QProgressBar *m_bar;
+    QLabel *m_label;
+    QTimer *m_timer;
+};
 
 TokenDetailDialog::TokenDetailDialog(Vault &vault, const GroupInfo &group, const TokenInfo &token, QWidget *parent)
     : QDialog(parent), m_vault(vault), m_group(group), m_t(token)
@@ -75,15 +127,10 @@ TokenDetailDialog::TokenDetailDialog(Vault &vault, const GroupInfo &group, const
     m_secret = new QLineEdit(kDot);
     m_secret->setReadOnly(true);
     m_show = ui::button(tr("顯示"), "primary");
-    m_copy = ui::button(tr("複製"));
-    m_copy->setEnabled(false);
     auto *srow = new QHBoxLayout;
     srow->addWidget(m_secret, 1);
     srow->addWidget(m_show);
-    srow->addWidget(m_copy);
     f2->addLayout(srow);
-    m_countdown = ui::label(QString(), "muted");
-    f2->addWidget(m_countdown);
     l->addWidget(c2);
 
     // card: dates + expiry
@@ -117,19 +164,13 @@ TokenDetailDialog::TokenDetailDialog(Vault &vault, const GroupInfo &group, const
     l->addLayout(act);
     l->addWidget(ui::label(tr("顯示、作廢、更新、刪除與變更期限都需要重新驗證；名稱與說明不需要。"), "muted", true));
 
-    m_hideTimer = new QTimer(this);
-    m_hideTimer->setInterval(1000);
-    connect(m_hideTimer, &QTimer::timeout, this, &TokenDetailDialog::tick);
-
     connect(save, &QPushButton::clicked, this, &TokenDetailDialog::saveTextMeta);
-    connect(m_show, &QPushButton::clicked, this, [this] { m_revealed.isEmpty() ? showSecret() : hideSecret(); });
-    connect(m_copy, &QPushButton::clicked, this, &TokenDetailDialog::copySecret);
+    connect(m_show, &QPushButton::clicked, this, &TokenDetailDialog::showSecret);
     connect(ebtn, &QPushButton::clicked, this, &TokenDetailDialog::changeExpiry);
     connect(bRevoke, &QPushButton::clicked, this, &TokenDetailDialog::revoke);
     connect(bRenew, &QPushButton::clicked, this, &TokenDetailDialog::renew);
     connect(bDel, &QPushButton::clicked, this, &TokenDetailDialog::remove);
     connect(bClose, &QPushButton::clicked, this, &QDialog::accept);
-    connect(this, &QDialog::finished, this, [this] { hideSecret(); });
 
     m_name->setText(m_t.name);
     m_note->setPlainText(m_t.note);
@@ -157,7 +198,7 @@ void TokenDetailDialog::refresh()
     const QLocale loc;
     QString exp = m_t.expires.isValid() ? loc.toString(m_t.expires.toLocalTime(), QLocale::ShortFormat) : tr("永不過期");
     if (m_t.expires.isValid() && st != TokenInfo::Expired) {
-        exp += QStringLiteral("（%1）").arg(icons::remainingText(m_t));
+        exp += QStringLiteral(" (%1)").arg(icons::remainingText(m_t));
     }
     m_info->setText(tr("群組：%1\n編號：%2.tkn\n建立：%3\n更新：%4\n到期：%5")
                         .arg(m_group.name, m_t.id,
@@ -188,49 +229,8 @@ void TokenDetailDialog::showSecret()
     AuthDialog dlg(m_vault.mode(), tr("身分驗證"), tr("需要驗證才能顯示 Token。"),
                    [v, gid, id, outp](const Credentials &c) { return v->revealToken(gid, id, c, outp); }, this);
     if (dlg.exec() != QDialog::Accepted) return;
-    m_revealed = out;
-    m_secret->setText(QString::fromUtf8(m_revealed.data()));
-    m_secret->setCursorPosition(0);
-    m_show->setText(tr("隱藏"));
-    m_copy->setEnabled(true);
-    m_left = kRevealSeconds;
-    m_countdown->setText(tr("%1 秒後自動隱藏").arg(m_left));
-    m_hideTimer->start();
-}
-
-void TokenDetailDialog::hideSecret()
-{
-    m_hideTimer->stop();
-    m_revealed.wipe();
-    m_secret->setText(kDot);
-    m_show->setText(tr("顯示"));
-    m_copy->setEnabled(false);
-    m_countdown->clear();
-}
-
-void TokenDetailDialog::tick()
-{
-    if (--m_left <= 0) hideSecret();
-    else m_countdown->setText(tr("%1 秒後自動隱藏").arg(m_left));
-}
-
-void TokenDetailDialog::copySecret()
-{
-    if (m_revealed.isEmpty()) return;
-    const QString text = QString::fromUtf8(m_revealed.data());
-    auto *md = new QMimeData;
-    md->setText(text);
-    // Best effort: ask clipboard managers / history (Windows, macOS) not to record this.
-    md->setData(QStringLiteral("ExcludeClipboardContentFromMonitorProcessing"), QByteArray(4, '\0'));
-    md->setData(QStringLiteral("org.nspasteboard.ConcealedType"), QByteArray("1"));
-    QApplication::clipboard()->setMimeData(md);
-    const QByteArray fp = QCryptographicHash::hash(text.toUtf8(), QCryptographicHash::Sha256);
-    m_countdown->setText(tr("已複製，30 秒後自動清除剪貼簿"));
-    QTimer::singleShot(30000, qApp, [fp] {
-        const QString cur = QApplication::clipboard()->text();
-        if (QCryptographicHash::hash(cur.toUtf8(), QCryptographicHash::Sha256) == fp)
-            QApplication::clipboard()->clear();
-    });
+    RevealDialog reveal(m_t.name, QString::fromUtf8(out.data()), this);
+    reveal.exec();
 }
 
 void TokenDetailDialog::changeExpiry()
@@ -274,7 +274,6 @@ void TokenDetailDialog::renew()
     if (!authorize(tr("更新 Token 需要驗證。"))) return;
     const Result r = m_vault.replaceTokenSecret(m_t.groupId, m_t.id, d.token(), d.changeExpiry(), d.newExpires(), true);
     if (!r) { QMessageBox::warning(this, windowTitle(), r.error); return; }
-    hideSecret();
     m_t.revoked = false;
     if (d.changeExpiry()) { m_t.expires = d.newExpires(); m_expiry->setValue(m_t.expires); }
     m_t.updated = QDateTime::currentDateTimeUtc();
@@ -293,6 +292,5 @@ void TokenDetailDialog::remove()
     const Result r = m_vault.deleteToken(m_t.groupId, m_t.id);
     if (!r) { QMessageBox::warning(this, windowTitle(), r.error); return; }
     m_changed = true;
-    hideSecret();
     QDialog::accept();
 }

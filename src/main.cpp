@@ -1,4 +1,5 @@
 #include "authdialogs.h"
+#include "i18n.h"
 #include "icons.h"
 #include "mainwindow.h"
 #include "theme.h"
@@ -10,6 +11,7 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     QApplication::setOrganizationName(QStringLiteral("TokenVault"));
     QApplication::setApplicationName(QStringLiteral("TokenVault"));
+    tv::i18n::install();                              // before any tr() text is created
     QApplication::setApplicationDisplayName(QObject::tr("TokenVault"));
     QApplication::setApplicationVersion(QStringLiteral("1.1.0"));
     QApplication::setWindowIcon(icons::appIcon());

@@ -26,4 +26,7 @@ QLayout *footer(QDialog *d, QPushButton **ok, QPushButton **cancel,
 
 QFrame *card(QWidget *inner = nullptr);
 
+// Word-wrapped labels only know their height once the width is final; call at the end of a dialog constructor.
+void fitHeight(QDialog *d);
+
 } // namespace ui

@@ -1,6 +1,8 @@
 #include "mainwindow.h"
 #include "authdialogs.h"
+#include "backupui.h"
 #include "editdialogs.h"
+#include "i18n.h"
 #include "icons.h"
 #include "theme.h"
 #include "tokendetail.h"
@@ -16,6 +18,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QPainter>
+#include <QProcess>
 #include <QPushButton>
 #include <QSettings>
 #include <QSplitter>
@@ -352,7 +355,7 @@ void MainWindow::populateSidebar()
     all->setData(RoleCount, QString::number(total));
     m_groups->addItem(all);
     for (const GroupInfo &g : m_groupData) {
-        auto *it = new QListWidgetItem(icons::groupIcon(g.icon, 28), g.name);
+        auto *it = new QListWidgetItem(icons::groupIconFor(g, 28), g.name);
         it->setData(RoleGroup, g.id);
         it->setData(RoleCount, QString::number(m_tokenData.value(g.id).size()));
         it->setToolTip(g.note);
@@ -464,12 +467,19 @@ void MainWindow::showSettingsMenu()
     menu.addSeparator();
     QAction *reset = menu.addAction(tr("重設驗證方法（密碼／鑰匙檔／TOTP）…"));
     QAction *al = menu.addAction(tr("自動鎖定時間…"));
+    QAction *lang = menu.addAction(QStringLiteral("語言 / Language…"));
+    menu.addSeparator();
+    QAction *exp = menu.addAction(tr("匯出備份…"));
+    QAction *imp = menu.addAction(tr("匯入備份…"));
     menu.addSeparator();
     QAction *quit = menu.addAction(tr("離開"));
     QAction *a = menu.exec(QCursor::pos());
     if (a == lock) lockNow();
     else if (a == reset) resetAuthMethod();
     else if (a == al) setAutoLock();
+    else if (a == lang) chooseLanguage();
+    else if (a == exp) exportBackup();
+    else if (a == imp) importBackup();
     else if (a == quit) close();
 }
 
@@ -588,6 +598,36 @@ void MainWindow::resetAuthMethod()
         QMessageBox::information(this, tr("完成"), tr("驗證方法已更新。下次解鎖與每次敏感操作都會使用新的設定。"));
 }
 
+void MainWindow::chooseLanguage()
+{
+    const QStringList codes = {QStringLiteral("auto"), QStringLiteral("zh_TW"), QStringLiteral("en")};
+    const QStringList names = {QStringLiteral("Auto / 自動"), QStringLiteral("繁體中文"), QStringLiteral("English")};
+    const int cur = int(codes.indexOf(tv::i18n::preferredLanguage()));
+    bool ok = false;
+    const QString pick = QInputDialog::getItem(this, QStringLiteral("語言 / Language"), QStringLiteral("語言 / Language"), names, cur < 0 ? 0 : cur, false, &ok);
+    if (!ok) return;
+    const QString code = codes.value(int(names.indexOf(pick)), QStringLiteral("auto"));
+    if (code == tv::i18n::preferredLanguage()) return;
+    tv::i18n::setPreferredLanguage(code);
+    if (QMessageBox::question(this, tr("設定"), tr("需要重新啟動才能套用語言，重新啟動後需要重新解鎖。現在重新啟動嗎？")) != QMessageBox::Yes) return;
+    m_vault.lock();
+    QProcess::startDetached(QCoreApplication::applicationFilePath(), QCoreApplication::arguments().mid(1));
+    qApp->quit();
+}
+
+void MainWindow::exportBackup()
+{
+    if (runExportFlow(m_vault, this)) QMessageBox::information(this, tr("匯出備份"), tr("備份已建立。請確實保存剛才顯示的兩組金鑰。"));
+}
+
+void MainWindow::importBackup()
+{
+    if (!runReplaceFromBackupFlow(m_vault, this)) return;
+    m_selectedGroup.clear();
+    reload();
+    QMessageBox::information(this, tr("匯入備份"), tr("匯入完成。現在起請使用備份中的密碼／鑰匙檔／TOTP 解鎖。"));
+}
+
 void MainWindow::setAutoLock()
 {
     bool ok = false;
@@ -640,7 +680,7 @@ void MainWindow::checkExpiry(bool includeSoon)
             } else if (includeSoon && t.expires.isValid() && t.daysLeft() < 3) {
                 if (m_notified.contains(key + "#s")) continue;
                 m_notified.insert(key + "#s");
-                soon << QStringLiteral("• %1 / %2（%3）").arg(g.name, t.name, statusText(t));
+                soon << QStringLiteral("• %1 / %2 (%3)").arg(g.name, t.name, statusText(t));
             }
         }
     }

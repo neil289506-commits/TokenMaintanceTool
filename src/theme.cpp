@@ -156,6 +156,4 @@ void install(QApplication &app)
 #endif
 }
 
-QString okText() { return QStringLiteral("有效"); }
-
 } // namespace theme

@@ -39,7 +39,11 @@ private:
     QPlainTextEdit *m_note;
     QButtonGroup *m_shapes, *m_colors;
     QString m_id;
+    QByteArray m_image;
+    QLabel *m_preview;
+    QPushButton *m_pick, *m_clear;
     void refreshShapeIcons();
+    void refreshImage();
 };
 
 class TokenDialog : public QDialog {

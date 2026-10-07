@@ -4,6 +4,7 @@
 #include <QButtonGroup>
 #include <QComboBox>
 #include <QDateTimeEdit>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -109,6 +110,31 @@ GroupDialog::GroupDialog(const GroupInfo &g, bool editing, QWidget *parent) : QD
     form->addRow(tr("說明"), m_note);
     l->addLayout(form);
 
+    // optional custom picture (takes priority over the preset icon below)
+    m_image = g.image;
+    auto *imgRow = new QHBoxLayout;
+    m_preview = new QLabel;
+    m_preview->setFixedSize(48, 48);
+    m_pick = ui::button(tr("選擇圖片…"));
+    m_clear = ui::button(tr("移除圖片"));
+    imgRow->addWidget(m_preview);
+    imgRow->addWidget(m_pick);
+    imgRow->addWidget(m_clear);
+    imgRow->addStretch(1);
+    l->addWidget(ui::label(tr("自訂圖片（選填，會優先於下面的圖示）"), "muted"));
+    l->addLayout(imgRow);
+    connect(m_pick, &QPushButton::clicked, this, [this] {
+        const QString f = QFileDialog::getOpenFileName(this, tr("選擇群組圖片"), QString(),
+                                                       tr("圖片 (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;所有檔案 (*)"));
+        if (f.isEmpty()) return;
+        QString err;
+        const QByteArray png = icons::normalizeGroupImage(f, &err);
+        if (png.isEmpty()) { QMessageBox::warning(this, windowTitle(), err); return; }
+        m_image = png;
+        refreshImage();
+    });
+    connect(m_clear, &QPushButton::clicked, this, [this] { m_image.clear(); refreshImage(); });
+
     int shape = 0, color = 0;
     if (!g.icon.isEmpty()) icons::parseSpec(g.icon, &shape, &color);
     m_shapes = new QButtonGroup(this);
@@ -141,19 +167,29 @@ GroupDialog::GroupDialog(const GroupInfo &g, bool editing, QWidget *parent) : QD
     m_colors->button(color)->setChecked(true);
     connect(m_colors, &QButtonGroup::idClicked, this, [this] { refreshShapeIcons(); });
     refreshShapeIcons();
+    refreshImage();
     l->addLayout(ui::footer(this, nullptr, nullptr));
     m_name->setFocus();
+}
+
+void GroupDialog::refreshImage()
+{
+    QImage img;
+    if (!m_image.isEmpty() && img.loadFromData(m_image)) m_preview->setPixmap(icons::roundedPixmap(img, 48));
+    else m_preview->setPixmap(icons::shapeIcon(m_shapes->checkedId(), m_colors->checkedId(), 48).pixmap(48, 48));
+    m_clear->setEnabled(!m_image.isEmpty());
 }
 
 void GroupDialog::refreshShapeIcons()
 {
     for (int i = 0; i < icons::shapeCount(); ++i)
         static_cast<QToolButton *>(m_shapes->button(i))->setIcon(icons::shapeIcon(i, m_colors->checkedId(), 28));
+    if (m_image.isEmpty()) refreshImage();
 }
 
 GroupInfo GroupDialog::result() const
 {
-    return {m_id, m_name->text().trimmed(), m_note->toPlainText(), icons::makeSpec(m_shapes->checkedId(), m_colors->checkedId())};
+    return {m_id, m_name->text().trimmed(), m_note->toPlainText(), icons::makeSpec(m_shapes->checkedId(), m_colors->checkedId()), m_image};
 }
 
 void GroupDialog::accept()
@@ -180,7 +216,7 @@ TokenDialog::TokenDialog(const QList<GroupInfo> &groups, const QString &preselec
     form->setVerticalSpacing(10);
     m_group = new QComboBox;
     for (const GroupInfo &g : groups) {
-        m_group->addItem(icons::groupIcon(g.icon, 20), g.name, g.id);
+        m_group->addItem(icons::groupIconFor(g, 20), g.name, g.id);
         if (g.id == preselect) m_group->setCurrentIndex(m_group->count() - 1);
     }
     m_name = new QLineEdit;

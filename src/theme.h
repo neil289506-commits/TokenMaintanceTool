@@ -16,6 +16,4 @@ struct Colors {
 };
 const Colors &c();
 
-QString okText();      // helper for badges, e.g. "有效"
-
 } // namespace theme

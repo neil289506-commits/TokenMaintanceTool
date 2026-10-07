@@ -6,6 +6,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QStyle>
+#include <QTimer>
 
 namespace ui {
 
@@ -122,6 +123,16 @@ QLayout *footer(QDialog *d, QPushButton **ok, QPushButton **cancel, const QStrin
     if (ok) *ok = o;
     if (cancel) *cancel = c;
     return row;
+}
+
+void fitHeight(QDialog *d)
+{
+    QTimer::singleShot(0, d, [d] {
+        if (!d->layout()) return;
+        d->layout()->activate();
+        const int h = d->layout()->totalHeightForWidth(d->width());
+        if (h > d->height()) d->resize(d->width(), h);
+    });
 }
 
 QFrame *card(QWidget *inner)

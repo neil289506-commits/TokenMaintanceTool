@@ -38,6 +38,9 @@ private:
     void deleteGroup(const QString &gid);
     void openToken(const QString &gid, const QString &id);
     void resetAuthMethod();
+    void chooseLanguage();
+    void exportBackup();
+    void importBackup();
     void setAutoLock();
     void restartIdle();
     void placeFab();

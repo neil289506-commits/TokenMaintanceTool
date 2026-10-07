@@ -1,4 +1,5 @@
 #include "authdialogs.h"
+#include "backupui.h"
 #include "busy.h"
 #include "icons.h"
 #include "qrimage.h"
@@ -160,6 +161,7 @@ TotpEnrollDialog::TotpEnrollDialog(QWidget *parent) : QDialog(parent), m_secret(
     m_ok->setEnabled(false);
     connect(m_code, &QLineEdit::textChanged, this, &TotpEnrollDialog::check);
     m_code->setFocus();
+    ui::fitHeight(this);
 }
 
 void TotpEnrollDialog::check()
@@ -201,6 +203,7 @@ ForgotDialog::ForgotDialog(QWidget *parent) : QDialog(parent)
     ok->setEnabled(false);
     ui::repolish(ok);
     connect(edit, &QLineEdit::textChanged, this, [ok](const QString &t) { ok->setEnabled(t.trimmed() == QObject::tr("刪除全部")); });
+    ui::fitHeight(this);
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +245,7 @@ AuthDialog::AuthDialog(AuthMode mode, const QString &title, const QString &reaso
     m_lockTimer->setInterval(1000);
     connect(m_lockTimer, &QTimer::timeout, this, &AuthDialog::tickLockout);
     m_cred->focusFirst();
+    ui::fitHeight(this);
 }
 
 void AuthDialog::tickLockout()
@@ -349,6 +353,12 @@ SetupDialog::SetupDialog(const QString &title, const QString &intro, Action acti
     m_err->hide();
     l->addWidget(m_err);
     l->addLayout(ui::footer(this, &m_ok, nullptr));
+    m_importBtn = ui::button(tr("已有備份？匯入備份…"), "link");
+    m_importBtn->hide();
+    l->insertWidget(1, m_importBtn, 0, Qt::AlignLeft);
+    connect(m_importBtn, &QPushButton::clicked, this, [this] {
+        if (m_importHandler && m_importHandler(this)) QDialog::accept();
+    });
 
     m_usePass->setChecked(m_first ? true : bool(current & AuthPassphrase));
     m_useFile->setChecked(bool(current & AuthKeyfile));
@@ -362,6 +372,13 @@ SetupDialog::SetupDialog(const QString &title, const QString &intro, Action acti
         }
     });
     updateRules();
+    ui::fitHeight(this);
+}
+
+void SetupDialog::setImportHandler(std::function<bool(QWidget *)> h)
+{
+    m_importHandler = std::move(h);
+    m_importBtn->setVisible(bool(m_importHandler) && m_first);
 }
 
 AuthMode SetupDialog::selectedMode() const
@@ -458,6 +475,7 @@ bool runSetupFlow(Vault &vault, QWidget *parent)
                       QObject::tr("設定用來保護所有 Token 的方式。資料以 SHA-512 + AES-256 + RSA-4096 加密後只存放在這台電腦。"),
                       [v](AuthMode m, const Credentials &c, const QByteArray &ts) { return v->create(m, c, ts); }, parent);
     setup.setWindowIcon(icons::appIcon());
+    setup.setImportHandler([v](QWidget *p) { return runImportFlow(*v, p); });
     return setup.exec() == QDialog::Accepted;
 }
 

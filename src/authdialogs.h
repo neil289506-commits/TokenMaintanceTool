@@ -79,7 +79,11 @@ public:
     SetupDialog(const QString &title, const QString &intro, Action action, QWidget *parent = nullptr,
                 tv::AuthMode current = tv::AuthMode(0));
     void accept() override;
+    // First run only: adds an "import backup" link. The handler returns true when a vault was restored.
+    void setImportHandler(std::function<bool(QWidget *)> h);
 private:
+    std::function<bool(QWidget *)> m_importHandler;
+    QPushButton *m_importBtn = nullptr;
     void updateRules();
     tv::AuthMode selectedMode() const;
     bool needsEnrollment() const;

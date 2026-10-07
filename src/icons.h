@@ -14,6 +14,11 @@ QString makeSpec(int shape, int color);                 // "<shape>:<color>"
 void parseSpec(const QString &spec, int *shape, int *color);
 
 QIcon groupIcon(const QString &spec, int logicalSize = 32);
+// Custom picture if the group has one, otherwise the preset shape icon.
+QIcon groupIconFor(const tv::GroupInfo &g, int logicalSize = 32);
+QPixmap roundedPixmap(const QImage &img, int logicalSize);
+// Loads any image Qt can read, crops to a square, scales to <= 256 px and returns PNG bytes (empty + err on failure).
+QByteArray normalizeGroupImage(const QString &file, QString *err);
 QIcon shapeIcon(int shape, int color, int logicalSize = 32);
 QIcon statusIcon(tv::TokenInfo::Status st, int logicalSize = 20);   // green check / red cross
 QIcon appIcon();

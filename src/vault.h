@@ -27,6 +27,31 @@ struct Credentials {
     QString passphrase;   // used when mode includes passphrase
     QString keyfile;      // path; used when mode includes keyfile
     QString totpCode;     // 6 digits; used when mode includes TOTP
+    QByteArray keyfileHash;   // SHA-512 of the key file. If set it is used INSTEAD of reading `keyfile` (backup import)
+
+    // Explicit constructor (not an aggregate) so `{pw, file, code}` stays warning-free as fields are added.
+    Credentials(QString pass = QString(), QString file = QString(), QString code = QString(), QByteArray fileHash = QByteArray())
+        : passphrase(std::move(pass)), keyfile(std::move(file)), totpCode(std::move(code)), keyfileHash(std::move(fileHash)) {}
+};
+
+// ---- backup / restore data (see backup.h) -----------------------------------------------------
+struct BackupToken {
+    QString name, note;
+    QDateTime created, updated, expires;
+    bool revoked = false;
+    SecureBytes secret;
+};
+struct BackupGroup {
+    QString name, note, icon;
+    QByteArray image;
+    QList<BackupToken> tokens;
+};
+struct BackupData {
+    AuthMode mode = AuthPassphrase;
+    QString passphrase;            // current passphrase (when mode has it)
+    QByteArray keyfileHash;        // SHA-512 of the current key file (when mode has it)
+    SecureBytes totpSecret;        // raw TOTP secret (when mode has it)
+    QList<BackupGroup> groups;
 };
 
 struct Result {
@@ -41,7 +66,8 @@ struct GroupInfo {
     QString id;       // 6 random alnum chars = directory name
     QString name;
     QString note;
-    QString icon;     // "<shape>:<colorIndex>", rendered by icons.cpp
+    QString icon;     // "<shape>:<colorIndex>", rendered by icons.cpp (used when there is no custom image)
+    QByteArray image; // optional custom picture, PNG bytes (stored encrypted inside _group.grp)
 };
 
 struct TokenInfo {
@@ -81,6 +107,11 @@ public:
     Result changeCredentials(const Credentials &oldC, AuthMode newMode, const Credentials &newC,
                              const QByteArray &newTotpSecret = QByteArray(), bool oldTotpAlreadyVerified = false);
     Result revealToken(const QString &groupId, const QString &id, const Credentials &c, SecureBytes *out) const;
+    // Verifies the credentials (incl. TOTP) and decrypts EVERYTHING for a backup. Needs an unlocked vault.
+    Result collectBackup(const Credentials &c, BackupData *out) const;
+    // Replaces the whole vault (existing data is wiped first) with the backup: same passphrase / key file hash /
+    // TOTP secret, fresh RSA-4096 + index key, every token re-encrypted. Leaves the vault unlocked.
+    Result importBackup(const BackupData &d);
 
     // "Forgot password": permanently deletes vault.json and every file under Token/. Nothing else in the
     // folder is touched. Needs no credentials, by design.
@@ -93,12 +124,14 @@ public:
     QList<GroupInfo> groups(QStringList *warnings = nullptr) const;
     QList<TokenInfo> tokens(const QString &groupId, QStringList *warnings = nullptr) const;
 
-    Result createGroup(const QString &name, const QString &note, const QString &icon, QString *idOut);
+    Result createGroup(const QString &name, const QString &note, const QString &icon, QString *idOut,
+                       const QByteArray &image = QByteArray());
     Result updateGroup(const GroupInfo &g);
     Result deleteGroup(const QString &id);                 // removes all tokens in it
 
     Result addToken(const QString &groupId, const QString &name, const QString &note,
                     const QDateTime &expires, const SecureBytes &token, QString *idOut);
+    Result addTokenWithMeta(const QString &groupId, const TokenInfo &meta, const SecureBytes &token, QString *idOut);
     Result updateTokenMeta(const TokenInfo &t);            // name / note / expires / revoked
     Result replaceTokenSecret(const QString &groupId, const QString &id, const SecureBytes &token,
                               bool changeExpiry, const QDateTime &newExpires /*invalid => never*/, bool clearRevoked);

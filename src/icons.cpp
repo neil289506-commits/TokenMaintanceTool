@@ -1,4 +1,6 @@
 #include "icons.h"
+#include <QBuffer>
+#include <QImage>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
@@ -21,7 +23,8 @@ QColor color(int idx) { return kColors[qBound(0, idx, colorCount() - 1)]; }
 
 QString shapeName(int idx)
 {
-    static const char *n[] = {"圓形", "方形", "菱形", "三角形", "星形", "六邊形", "愛心", "盾牌"};
+    static const char *n[] = {QT_TR_NOOP("圓形"), QT_TR_NOOP("方形"), QT_TR_NOOP("菱形"), QT_TR_NOOP("三角形"),
+                              QT_TR_NOOP("星形"), QT_TR_NOOP("六邊形"), QT_TR_NOOP("愛心"), QT_TR_NOOP("盾牌")};
     return QObject::tr(n[qBound(0, idx, shapeCount() - 1)]);
 }
 
@@ -111,6 +114,51 @@ QIcon groupIcon(const QString &spec, int sz)
     int s, c;
     parseSpec(spec, &s, &c);
     return shapeIcon(s, c, sz);
+}
+
+QPixmap roundedPixmap(const QImage &src, int sz)
+{
+    const int dpr = 2;
+    QPixmap pm(sz * dpr, sz * dpr);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter g(&pm);
+    g.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
+    QPainterPath clip;
+    clip.addRoundedRect(QRectF(0, 0, sz, sz), sz * 0.22, sz * 0.22);
+    g.setClipPath(clip);
+    g.drawImage(QRectF(0, 0, sz, sz), src);
+    return pm;
+}
+
+QIcon groupIconFor(const tv::GroupInfo &gi, int sz)
+{
+    if (!gi.image.isEmpty()) {
+        QImage img;
+        if (img.loadFromData(gi.image)) return QIcon(roundedPixmap(img, sz));
+    }
+    return groupIcon(gi.icon, sz);
+}
+
+QByteArray normalizeGroupImage(const QString &file, QString *err)
+{
+    QImage img(file);
+    if (img.isNull()) {
+        if (err) *err = QObject::tr("無法讀取這張圖片");
+        return {};
+    }
+    const int side = qMin(img.width(), img.height());
+    img = img.copy((img.width() - side) / 2, (img.height() - side) / 2, side, side);       // centre-crop to a square
+    if (side > 256) img = img.scaled(256, 256, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    QByteArray png;
+    QBuffer buf(&png);
+    buf.open(QIODevice::WriteOnly);
+    img.save(&buf, "PNG");
+    if (png.isEmpty() || png.size() > 1024 * 1024) {
+        if (err) *err = QObject::tr("圖片太大");
+        return {};
+    }
+    return png;
 }
 
 QIcon statusIcon(tv::TokenInfo::Status st, int sz)

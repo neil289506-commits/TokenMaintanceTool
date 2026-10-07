@@ -170,11 +170,16 @@ static Result buildMaterial(AuthMode mode, const Credentials &c, SecureBytes *ou
         m.append(p);
     }
     if (mode & AuthKeyfile) {
-        if (c.keyfile.isEmpty()) return Result::fail(QObject::tr("請選擇鑰匙檔"));
-        QString err;
-        const QByteArray h = sha512File(c.keyfile, &err);
-        if (h.isEmpty()) return Result::fail(QObject::tr("無法讀取鑰匙檔：%1").arg(err));
-        m.append(h);
+        if (!c.keyfileHash.isEmpty()) {
+            if (c.keyfileHash.size() != 64) return Result::fail(QObject::tr("鑰匙檔雜湊長度不正確"));
+            m.append(c.keyfileHash);
+        } else {
+            if (c.keyfile.isEmpty()) return Result::fail(QObject::tr("請選擇鑰匙檔"));
+            QString err;
+            const QByteArray h = sha512File(c.keyfile, &err);
+            if (h.isEmpty()) return Result::fail(QObject::tr("無法讀取鑰匙檔：%1").arg(err));
+            m.append(h);
+        }
     }
     *out = SecureBytes(m);
     OPENSSL_cleanse(m.data(), size_t(m.size()));
@@ -353,6 +358,7 @@ QList<GroupInfo> Vault::groups(QStringList *warnings) const
         g.name = m.value("name").toString();
         g.note = m.value("note").toString();
         g.icon = m.value("icon").toString();
+        g.image = QByteArray::fromBase64(m.value("image").toString().toLatin1());
         out.append(g);
     }
     return out;
@@ -364,6 +370,7 @@ static Result writeGroup(const Vault &v, const SecureBytes &index, const GroupIn
     m["name"] = g.name;
     m["note"] = g.note;
     m["icon"] = g.icon;
+    if (!g.image.isEmpty()) m["image"] = QString::fromLatin1(g.image.toBase64());
     QJsonObject o;
     o["v"] = kVersion;
     o["meta"] = QString::fromLatin1(b64(aesGcmSeal(index, QJsonDocument(m).toJson(QJsonDocument::Compact), aadFor("GRP1", g.id))));
@@ -372,14 +379,15 @@ static Result writeGroup(const Vault &v, const SecureBytes &index, const GroupIn
     return Result::success();
 }
 
-Result Vault::createGroup(const QString &name, const QString &note, const QString &icon, QString *idOut)
+Result Vault::createGroup(const QString &name, const QString &note, const QString &icon, QString *idOut,
+                          const QByteArray &image)
 {
     if (!isUnlocked()) return Result::fail(QObject::tr("保險庫已鎖定"));
     if (name.trimmed().isEmpty()) return Result::fail(QObject::tr("請輸入群組名稱"));
     try {
         QString id;
         do { id = randomId(6); } while (QDir(groupDir(id)).exists());
-        GroupInfo g{id, name.trimmed(), note, icon};
+        GroupInfo g{id, name.trimmed(), note, icon, image};
         QDir().mkpath(groupDir(id));
         if (Result r = writeGroup(*this, m_index, g); !r) return r;
         if (idOut) *idOut = id;
@@ -503,6 +511,28 @@ Result Vault::addToken(const QString &groupId, const QString &name, const QStrin
     }
 }
 
+Result Vault::addTokenWithMeta(const QString &groupId, const TokenInfo &meta, const SecureBytes &token, QString *idOut)
+{
+    if (!isUnlocked()) return Result::fail(QObject::tr("保險庫已鎖定"));
+    if (meta.name.trimmed().isEmpty()) return Result::fail(QObject::tr("請輸入名稱"));
+    if (!QDir(groupDir(groupId)).exists()) return Result::fail(QObject::tr("群組不存在"));
+    try {
+        QString id;
+        do { id = randomId(6); } while (QFile::exists(tokenFile(groupId, id)));
+        TokenInfo t = meta;
+        t.id = id;
+        t.groupId = groupId;
+        t.name = meta.name.trimmed();
+        if (!t.created.isValid()) t.created = QDateTime::currentDateTimeUtc();
+        if (!t.updated.isValid()) t.updated = t.created;
+        if (Result r = writeToken(*this, m_index, t, sealSecret(m_pub.get(), id, token)); !r) return r;
+        if (idOut) *idOut = id;
+        return Result::success();
+    } catch (const std::exception &e) {
+        return Result::fail(QString::fromUtf8(e.what()));
+    }
+}
+
 Result Vault::updateTokenMeta(const TokenInfo &t)
 {
     if (!isUnlocked()) return Result::fail(QObject::tr("保險庫已鎖定"));
@@ -576,6 +606,94 @@ Result Vault::revealToken(const QString &groupId, const QString &id, const Crede
     } catch (const std::exception &e) {
         return Result::fail(QString::fromUtf8(e.what()));
     }
+}
+
+Result Vault::collectBackup(const Credentials &c, BackupData *out) const
+{
+    if (!isUnlocked()) return Result::fail(QObject::tr("保險庫已鎖定"));
+    Header h;
+    QString err;
+    if (!readHeader(&h, &err)) return Result::fail(err);
+    try {
+        SecureBytes privDer, totpSecret;
+        if (Result r = deriveAndOpen(c, h, &privDer, nullptr, &totpSecret); !r) return r;
+        PKey priv = privFromDer(privDer);
+        if (!priv) return Result::fail(QObject::tr("保險庫檔案已損毀"));
+
+        BackupData d;
+        d.mode = h.mode;
+        if (h.mode & AuthPassphrase) d.passphrase = c.passphrase;
+        if (h.mode & AuthKeyfile) {
+            if (!c.keyfileHash.isEmpty()) d.keyfileHash = c.keyfileHash;
+            else {
+                QString e2;
+                d.keyfileHash = sha512File(c.keyfile, &e2);
+                if (d.keyfileHash.isEmpty()) return Result::fail(QObject::tr("無法讀取鑰匙檔：%1").arg(e2));
+            }
+        }
+        if (h.mode & AuthTotp) d.totpSecret = totpSecret;
+
+        QStringList warn;
+        for (const GroupInfo &g : groups(&warn)) {
+            BackupGroup bg;
+            bg.name = g.name;
+            bg.note = g.note;
+            bg.icon = g.icon;
+            bg.image = g.image;
+            for (const TokenInfo &t : tokens(g.id, &warn)) {
+                QJsonObject o;
+                SecureBytes cek, plain;
+                if (!readJson(tokenFile(g.id, t.id), &o)
+                    || !rsaOaepDecrypt(priv.get(), unb64(o.value("wrap")), &cek)
+                    || !aesGcmOpen(cek, unb64(o.value("secret")), aadFor("TKN-SEC", t.id), &plain) || plain.size() < 32
+                    || sha256(plain.data().mid(32)) != plain.data().left(32))
+                    return Result::fail(QObject::tr("Token「%1」解密失敗，已中止匯出").arg(t.name));
+                BackupToken bt;
+                bt.name = t.name;
+                bt.note = t.note;
+                bt.created = t.created;
+                bt.updated = t.updated;
+                bt.expires = t.expires;
+                bt.revoked = t.revoked;
+                bt.secret = SecureBytes(plain.data().mid(32));
+                bg.tokens.append(bt);
+            }
+            d.groups.append(bg);
+        }
+        if (!warn.isEmpty()) return Result::fail(QObject::tr("部分資料無法讀取，已中止匯出以免備份不完整：\n") + warn.join('\n'));
+        *out = d;
+        return Result::success();
+    } catch (const std::exception &e) {
+        return Result::fail(QString::fromUtf8(e.what()));
+    }
+}
+
+Result Vault::importBackup(const BackupData &d)
+{
+    if (QString e = validateMode(d.mode); !e.isEmpty()) return Result::fail(e);
+    if (d.groups.size() > 10000) return Result::fail(QObject::tr("備份內容過大"));
+    if (exists()) {
+        if (Result r = wipeAll(); !r) return r;
+    }
+    Credentials c;
+    c.passphrase = d.passphrase;
+    c.keyfileHash = d.keyfileHash;
+    if (Result r = create(d.mode, c, d.totpSecret.data()); !r) return r;
+    for (const BackupGroup &g : d.groups) {
+        QString gid;
+        if (Result r = createGroup(g.name, g.note, g.icon.isEmpty() ? QStringLiteral("0:0") : g.icon, &gid, g.image); !r) return r;
+        for (const BackupToken &t : g.tokens) {
+            TokenInfo meta;
+            meta.name = t.name;
+            meta.note = t.note;
+            meta.created = t.created;
+            meta.updated = t.updated;
+            meta.expires = t.expires;
+            meta.revoked = t.revoked;
+            if (Result r = addTokenWithMeta(gid, meta, t.secret, nullptr); !r) return r;
+        }
+    }
+    return Result::success();
 }
 
 } // namespace tv
