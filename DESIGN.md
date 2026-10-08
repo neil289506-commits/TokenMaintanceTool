@@ -29,6 +29,11 @@
 
 **忘記密碼**：`Vault::wipeAll()` 只刪 `vault.json` 與 `Token/` 底下的檔案（先覆寫再刪除），不碰資料夾裡其他東西。沒有後門、沒有備份金鑰，這是刻意的：任何「不需密碼就能解密」的機制都等於沒有加密。
 
+## Windows ARM64 的 DLL
+ARM64 版在 x64 的 runner 上交叉編譯，**不能執行**，所以也不能執行 ARM64 的 `windeployqt`。做法：從 `qt-target/.../msvc2022_arm64` 直接複製 `Qt6Core / Gui / Widgets / Concurrent.dll`、`platforms/qwindows.dll`、`styles/qmodernwindowsstyle.dll`、`imageformats/{qjpeg,qgif,qico}.dll`（有的話），再從 Visual Studio 的 redistributable 資料夾複製 ARM64 的 Visual C++ 執行庫（app-local）。OpenSSL 是靜態連結，不需要 DLL。
+
+因為無法執行，改用 `.github/scripts/check_deps.py` 靜態檢查：用 MSVC 的 `dumpbin` 確認資料夾內每個 exe/dll 都是 ARM64（擋掉誤放的 x64 DLL），而且它們匯入的每個 DLL 不是同資料夾內有，就是 Windows 系統 DLL（`api-ms-*` 或 System32 內存在）。檢查不過整個 job 就失敗、不會發佈。這個腳本的邏輯我用假的 dumpbin 測過（正常、缺 DLL、架構錯誤三種情況）；真正的 `dumpbin` 輸出格式我沒機會驗證，第一次跑 CI 才會知道。
+
 ## QR Code
 `third_party/qrcodegen`（Nayuki，MIT）從 GitHub 原樣取得。我用 OpenCV 的 QR 解碼器把程式實際畫出的圖解回字串，確認內容就是正確的 `otpauth://` 網址、金鑰與畫面上的 Base32 相同。
 
@@ -66,7 +71,7 @@
 - RFC 8017：RSAES-OAEP。
 - RFC 6238 附錄 B、RFC 4226、RFC 4648：TOTP/HOTP/Base32 測試向量，已寫進 `tests/tst_vault.cpp` 並通過（不是憑記憶，是程式實際算出來比對）。
 - OpenSSL EVP API：`EVP_PKEY_encrypt`、`EVP_aes_256_gcm`、`PKCS5_PBKDF2_HMAC`。
-- neil289506-commits/Pomodoro PR #3（有實際讀到，且該 PR 的五個 workflow 皆為綠燈）：Qt 6.8.3；Linux amd64 的 aqt arch 是 `linux_gcc_64`（不是 `gcc_64`）；Linux arm64 要用 `ubuntu-24.04-arm` + `linux_gcc_arm64`（Qt 6.8.3 arm64 套件需要 glibc ≥ 2.38，22.04 不行）；Windows ARM64 用 `win64_msvc2022_arm64_cross_compiled` 在 windows-2022 交叉編譯（`msvc_arch: amd64_arm64`），host Qt 放 `qt-host/`、target Qt 放 `qt-target/`，windeployqt 只用在 x64。
+- neil289506-commits/Pomodoro PR #3（有實際讀到，且該 PR 的五個 workflow 皆為綠燈）：Qt 6.8.3；Linux amd64 的 aqt arch 是 `linux_gcc_64`（不是 `gcc_64`）；Linux arm64 要用 `ubuntu-24.04-arm` + `linux_gcc_arm64`（Qt 6.8.3 arm64 套件需要 glibc ≥ 2.38，22.04 不行）；Windows ARM64 用 `win64_msvc2022_arm64_cross_compiled` 在 windows-2022 交叉編譯（`msvc_arch: amd64_arm64`），host Qt 放 `qt-host/`、target Qt 放 `qt-target/`，windeployqt 只用在 x64；ARM64 的 DLL 改為手動複製（見下方「Windows ARM64 的 DLL」）。
 - Pomodoro PR #5 / #6 與 README（有實際讀到）：release 流程、Tag/名稱規則、`package.py` 的用途。
 - **讀不到**：Pomodoro 的實際 `.yml` 全文（github.com 的 tree/blob 頁面禁止自動存取），所以 `release.yml`、`package.py` 以及 Windows ARM64 的 cmake 後半段參數（`QT_HOST_PATH` 等）是我依上述描述自行實作，不是複製。
 - 先前版本（我寫的）用 `ubuntu-22.04-arm` 建 Linux ARM64 是錯的，已依上面的實測改為 `ubuntu-24.04-arm`。

@@ -1,7 +1,8 @@
 # Windows_AMD64 + Windows_ARM64
 # Pattern taken from neil289506-commits/Pomodoro windows.yml (PR #3): Qt 6.8.3, a host Qt (win64_msvc2022_64) in
 # qt-host/, and for ARM64 a cross-compiled target Qt (win64_msvc2022_arm64_cross_compiled) in qt-target/,
-# built on windows-2022 with msvc_arch amd64_arm64.
+# built on windows-2022 with msvc_arch amd64_arm64. Both Windows packages ship their Qt DLLs; the ARM64 set is
+# assembled by hand and checked statically with .github/scripts/check_deps.py.
 name: windows
 
 on:
@@ -119,10 +120,36 @@ jobs:
           set -euxo pipefail
           mkdir -p stage/TokenVault dist
           cp "build-${{ matrix.name }}/TokenVault.exe" stage/TokenVault/
+          D=stage/TokenVault
           if [ "${{ matrix.arm64 }}" = "false" ]; then
-            # x64: ship the Qt runtime next to the exe (same as Pomodoro). ARM64 has no runnable host
-            # windeployqt, so it ships the exe only and needs a Qt 6.8.3 ARM64 runtime.
-            "$GITHUB_WORKSPACE/qt-host/Qt/${QT_VERSION}/msvc2022_64/bin/windeployqt.exe" --release --no-translations stage/TokenVault/TokenVault.exe
+            # x64: ship the Qt runtime next to the exe (same as Pomodoro).
+            "$GITHUB_WORKSPACE/qt-host/Qt/${QT_VERSION}/msvc2022_64/bin/windeployqt.exe" --release --no-translations "$D/TokenVault.exe"
+          else
+            # ARM64: this runner is x64, so the ARM64 windeployqt cannot run. Copy what the app links against by hand
+            # (Qt ARM64 DLLs + the plugins a Widgets app needs + the ARM64 MSVC runtime), then verify the result below.
+            QT_TARGET="$GITHUB_WORKSPACE/qt-target/Qt/${QT_VERSION}/${{ matrix.qt_target_dir }}"
+            for m in Core Gui Widgets Concurrent; do cp "$QT_TARGET/bin/Qt6$m.dll" "$D/"; done
+            mkdir -p "$D/platforms" "$D/styles" "$D/imageformats"
+            cp "$QT_TARGET/plugins/platforms/qwindows.dll" "$D/platforms/"
+            cp "$QT_TARGET/plugins/styles/qmodernwindowsstyle.dll" "$D/styles/"
+            for p in qjpeg qgif qico; do       # PNG is built into QtGui; these are for jpg / gif / ico group pictures
+              if [ -f "$QT_TARGET/plugins/imageformats/$p.dll" ]; then cp "$QT_TARGET/plugins/imageformats/$p.dll" "$D/imageformats/"; fi
+            done
+            # app-local ARM64 Visual C++ runtime from the Visual Studio redistributable folder
+            CRT=""
+            if [ -n "${VCToolsRedistDir:-}" ]; then
+              REDIST="$(cygpath -u "$VCToolsRedistDir")"
+              CRT="$(ls -d "$REDIST"arm64/Microsoft.VC*.CRT 2>/dev/null | head -1 || true)"
+            fi
+            if [ -z "$CRT" ] && [ -n "${VCINSTALLDIR:-}" ]; then
+              CRT="$(find "$(cygpath -u "$VCINSTALLDIR")Redist/MSVC" -maxdepth 3 -type d -path '*arm64/Microsoft.VC*.CRT' 2>/dev/null | sort | tail -1 || true)"
+            fi
+            test -n "$CRT" || { echo "::error::ARM64 Visual C++ runtime folder not found"; exit 1; }
+            echo "CRT from: $CRT"
+            cp "$CRT"/*.dll "$D/"
+            find "$D" -type f | sort
+            # cannot run an ARM64 binary on this runner, so check architecture + imports statically
+            python .github/scripts/check_deps.py "$D" --machine arm64
           fi
           tar -cf "dist/${{ matrix.name }}.tar" -C stage TokenVault
 

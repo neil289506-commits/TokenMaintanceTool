@@ -75,6 +75,6 @@ jobs:
             --title "${{ steps.n.outputs.title }}" \
             --notes "第 ${{ steps.n.outputs.n }} 次發佈（commit ${GITHUB_SHA::7}）。每個平台各自一個 zip，檔名結尾為 CP${{ steps.n.outputs.n }}。
           - Windows_AMD64：解壓後執行 TokenVault.exe（已含 Qt 執行庫）
-          - Windows_ARM64：只有 TokenVault.exe，需自備 Qt 6.8.3 ARM64 執行庫
+          - Windows_ARM64：解壓後執行 TokenVault.exe（已含 Qt ARM64 DLL 與 Visual C++ 執行庫）
           - Mac_Universal：TokenVault.app（arm64 + x86_64），需本機已安裝 Qt 6.8.3，未簽署
           - Linux_AMD64 / Linux_ARM64：單一執行檔，需本機已安裝 Qt 6.8.3 執行庫（ARM64 需 glibc 2.38+）"
