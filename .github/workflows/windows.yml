@@ -146,7 +146,16 @@ jobs:
             fi
             test -n "$CRT" || { echo "::error::ARM64 Visual C++ runtime folder not found"; exit 1; }
             echo "CRT from: $CRT"
-            cp "$CRT"/*.dll "$D/"
+            # Copy only DLLs that are native ARM64 images. CI found that the ARM64 redist folder also holds
+            # vcruntime140_1.dll as an ARM64EC (x64-machine) image: a native ARM64 process cannot load it and nothing
+            # native imports it, so it must not be shipped. (check_deps.py below still fails if something does need it.)
+            for f in "$CRT"/*.dll; do
+              if MSYS2_ARG_CONV_EXCL='*' dumpbin /nologo /headers "$f" | grep -q "AA64 machine"; then
+                cp "$f" "$D/"
+              else
+                echo "skipping $(basename "$f"): not a native ARM64 image"
+              fi
+            done
             find "$D" -type f | sort
             # cannot run an ARM64 binary on this runner, so check architecture + imports statically
             python .github/scripts/check_deps.py "$D" --machine arm64
